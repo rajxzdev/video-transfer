@@ -2,298 +2,166 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
     <title>Galaxy Transfer</title>
     <link rel="stylesheet" href="style.css">
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
 </head>
 <body>
-    <div class="stars" id="stars"></div>
-    <div class="shooting-stars">
-        <div class="shooting-star"></div>
-        <div class="shooting-star"></div>
-        <div class="shooting-star"></div>
-    </div>
+    <canvas id="starCanvas"></canvas>
 
-    <div class="app-container">
-        <!-- Header -->
-        <header class="glass-header">
-            <div class="logo-section">
-                <div class="logo-icon">
-                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+    <div class="app">
+        <header class="header glass-liquid">
+            <div class="header-left">
+                <div class="logo-orb">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" width="22" height="22">
                         <path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/>
                     </svg>
                 </div>
-                <div class="logo-text">
-                    <h1>Galaxy Transfer</h1>
-                    <p>Peer-to-Peer Video Transfer</p>
+                <div>
+                    <h1 class="logo-title">Galaxy Transfer</h1>
+                    <p class="logo-sub">P2P Video Transfer</p>
                 </div>
             </div>
-            <div class="device-badge glass-liquid" id="myDeviceId">
-                <span class="pulse-dot"></span>
-                <span class="device-id-text">Initializing...</span>
+            <div class="my-badge" id="headerBadge">
+                <span class="dot-pulse"></span>
+                <span id="headerIdText">Starting...</span>
             </div>
         </header>
 
-        <!-- Navigation -->
-        <nav class="glass-nav">
-            <button class="nav-btn glass-liquid active" data-tab="pair">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                    <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/>
-                    <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/>
-                </svg>
+        <nav class="nav glass-liquid">
+            <button class="nav-btn active" data-tab="pair">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="20" height="20"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>
                 <span>Pair</span>
             </button>
-            <button class="nav-btn glass-liquid" data-tab="transfer">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                    <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
-                    <polyline points="17 8 12 3 7 8"/>
-                    <line x1="12" y1="3" x2="12" y2="15"/>
-                </svg>
-                <span>Transfer</span>
+            <button class="nav-btn" data-tab="send">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="20" height="20"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+                <span>Send</span>
             </button>
-            <button class="nav-btn glass-liquid" data-tab="devices">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                    <rect x="4" y="4" width="16" height="16" rx="2"/>
-                    <rect x="9" y="9" width="6" height="6"/>
-                </svg>
+            <button class="nav-btn" data-tab="devices">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="20" height="20"><rect x="5" y="2" width="14" height="20" rx="2" ry="2"/><line x1="12" y1="18" x2="12.01" y2="18"/></svg>
                 <span>Devices</span>
             </button>
-            <button class="nav-btn glass-liquid" data-tab="receive">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                    <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
-                    <polyline points="7 10 12 15 17 10"/>
-                    <line x1="12" y1="15" x2="12" y2="3"/>
-                </svg>
-                <span>Receive</span>
+            <button class="nav-btn" data-tab="inbox">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="20" height="20"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+                <span>Inbox</span>
+                <span class="notif-dot" id="inboxDot" style="display:none;"></span>
             </button>
         </nav>
 
-        <!-- Tab: Pair -->
-        <section class="tab-content active" id="tab-pair">
-            <div class="section-card glass-card">
-                <h2 class="section-title">
-                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="24" height="24">
-                        <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/>
-                        <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/>
-                    </svg>
-                    Pair New Device
-                </h2>
-                <p class="section-desc">Enter the Device ID of the device you want to connect with</p>
-
-                <div class="input-group">
-                    <div class="glass-input-wrapper">
-                        <input type="text" id="pairIdInput" class="glass-input" placeholder="Enter Device ID..." autocomplete="off">
-                        <button class="input-action-btn glass-liquid" id="pasteBtn" title="Paste">
-                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="18" height="18">
-                                <rect x="9" y="9" width="13" height="13" rx="2" ry="2"/>
-                                <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
-                            </svg>
-                        </button>
-                    </div>
-                    <button class="btn-primary glass-liquid" id="pairBtn">
-                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="20" height="20">
-                            <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/>
-                            <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/>
-                        </svg>
-                        <span>Connect</span>
-                    </button>
+        <!-- PAIR TAB -->
+        <section class="tab active" id="tab-pair">
+            <div class="card glass-card fade-up">
+                <h2 class="card-title">🔗 Pair Device</h2>
+                <p class="card-desc">Enter the other device's ID to connect</p>
+                <div class="input-row">
+                    <input type="text" id="pairInput" class="text-input" placeholder="e.g. GT-ABC123" spellcheck="false" autocomplete="off">
+                    <button class="btn-icon glass-liquid" id="btnPaste" title="Paste">📋</button>
                 </div>
+                <button class="btn-primary glass-liquid" id="btnConnect">
+                    <span>🔗</span> Connect
+                </button>
+            </div>
 
-                <div class="divider-text"><span>or share your ID</span></div>
-
-                <div class="my-id-display glass-card-inner">
-                    <label>Your Device ID</label>
-                    <div class="id-copy-row">
-                        <code id="myIdDisplay">---</code>
-                        <button class="btn-icon glass-liquid" id="copyIdBtn" title="Copy ID">
-                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="18" height="18">
-                                <rect x="9" y="9" width="13" height="13" rx="2" ry="2"/>
-                                <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
-                            </svg>
-                        </button>
-                    </div>
+            <div class="card glass-card fade-up" style="animation-delay:0.1s">
+                <h2 class="card-title">📲 Your Device ID</h2>
+                <p class="card-desc">Share this ID with the other device</p>
+                <div class="id-box glass-inner">
+                    <code id="myIdCode">Generating...</code>
+                    <button class="btn-icon glass-liquid" id="btnCopy" title="Copy">📋</button>
+                </div>
+                <div class="status-row" id="peerStatus">
+                    <span class="status-dot offline"></span>
+                    <span id="peerStatusText">Connecting to network...</span>
                 </div>
             </div>
 
-            <!-- Connection Status -->
-            <div class="section-card glass-card" id="connectionStatus" style="display:none;">
-                <div class="connection-info">
-                    <div class="connection-anim">
-                        <div class="orbit-ring">
-                            <div class="orbit-dot"></div>
-                        </div>
-                    </div>
-                    <h3 id="connStatusText">Connecting...</h3>
-                    <p id="connPeerId" class="conn-peer-id"></p>
+            <div class="card glass-card fade-up" id="connCard" style="display:none;animation-delay:0.2s">
+                <div class="conn-status" id="connInfo">
+                    <div class="orbit-anim"><div class="orbit-ring"><div class="orbit-dot"></div></div></div>
+                    <h3 id="connText">Connecting...</h3>
+                    <p id="connPeer" class="mono"></p>
                 </div>
             </div>
         </section>
 
-        <!-- Tab: Transfer -->
-        <section class="tab-content" id="tab-transfer">
-            <div class="section-card glass-card">
-                <h2 class="section-title">
-                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="24" height="24">
-                        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
-                        <polyline points="17 8 12 3 7 8"/>
-                        <line x1="12" y1="3" x2="12" y2="15"/>
-                    </svg>
-                    Send Videos
-                </h2>
-                <p class="section-desc">Select videos to send to connected device. No file size limit.</p>
+        <!-- SEND TAB -->
+        <section class="tab" id="tab-send">
+            <div class="card glass-card fade-up">
+                <h2 class="card-title">🚀 Send Videos</h2>
+                <p class="card-desc">No file size limit. Select multiple videos.</p>
 
-                <div class="connected-device-bar glass-card-inner" id="sendTargetBar">
-                    <span class="target-label">Send to:</span>
-                    <select id="targetDeviceSelect" class="glass-select">
-                        <option value="">-- No connected device --</option>
+                <div class="target-row glass-inner">
+                    <span>Send to:</span>
+                    <select id="targetSelect" class="select-input">
+                        <option value="">No device connected</option>
                     </select>
                 </div>
 
-                <div class="drop-zone glass-card-inner" id="dropZone">
-                    <div class="drop-icon">
-                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" width="48" height="48">
-                            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
-                            <polyline points="17 8 12 3 7 8"/>
-                            <line x1="12" y1="3" x2="12" y2="15"/>
-                        </svg>
-                    </div>
-                    <p>Drag & drop videos here</p>
-                    <span>or</span>
-                    <button class="btn-secondary glass-liquid" id="selectFilesBtn">
-                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="18" height="18">
-                            <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>
-                        </svg>
-                        Browse Files
-                    </button>
+                <div class="drop-area glass-inner" id="dropArea">
+                    <div class="drop-icon">📁</div>
+                    <p>Tap to select or drag videos here</p>
+                    <button class="btn-secondary glass-liquid" id="btnBrowse">Browse Files</button>
                     <input type="file" id="fileInput" multiple accept="video/*" hidden>
                 </div>
 
-                <!-- Selected Files -->
-                <div class="file-list-section" id="fileListSection" style="display:none;">
-                    <div class="file-list-header">
-                        <h3>Selected Videos (<span id="fileCount">0</span>)</h3>
-                        <div class="file-list-actions">
-                            <button class="btn-sm glass-liquid" id="clearAllBtn">Clear All</button>
-                        </div>
+                <div id="fileSection" style="display:none;">
+                    <div class="file-header">
+                        <h3>📹 Selected (<span id="fCount">0</span>)</h3>
+                        <button class="btn-sm glass-liquid" id="btnClearFiles">Clear</button>
                     </div>
                     <div class="file-list" id="fileList"></div>
-                    <div class="total-size">
-                        Total: <span id="totalSize">0 MB</span>
-                    </div>
-                    <button class="btn-primary glass-liquid btn-send" id="sendBtn">
-                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="20" height="20">
-                            <line x1="22" y1="2" x2="11" y2="13"/>
-                            <polygon points="22 2 15 22 11 13 2 9 22 2"/>
-                        </svg>
-                        <span>Send All Videos</span>
+                    <div class="size-total">Total: <strong id="fTotal">0 MB</strong></div>
+                    <button class="btn-primary glass-liquid btn-full" id="btnSend">
+                        <span>📤</span> Send All
                     </button>
                 </div>
             </div>
 
-            <!-- Transfer Progress -->
-            <div class="section-card glass-card" id="transferProgress" style="display:none;">
-                <h2 class="section-title">
-                    <div class="spinner-small"></div>
-                    Transfer Progress
-                </h2>
-                <div class="progress-list" id="progressList"></div>
-                <div class="overall-progress">
-                    <div class="progress-bar-wrapper glass-card-inner">
-                        <div class="progress-bar" id="overallProgress"></div>
-                    </div>
-                    <span class="progress-text" id="overallProgressText">0%</span>
+            <div class="card glass-card fade-up" id="progressCard" style="display:none;">
+                <h2 class="card-title">⏳ Progress</h2>
+                <div id="progressList"></div>
+                <div class="overall-row">
+                    <div class="pbar-wrap glass-inner"><div class="pbar" id="overallBar"></div></div>
+                    <span class="pbar-text" id="overallText">0%</span>
                 </div>
             </div>
         </section>
 
-        <!-- Tab: Devices -->
-        <section class="tab-content" id="tab-devices">
-            <div class="section-card glass-card">
-                <h2 class="section-title">
-                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="24" height="24">
-                        <rect x="4" y="4" width="16" height="16" rx="2"/>
-                        <rect x="9" y="9" width="6" height="6"/>
-                    </svg>
-                    Saved Devices
-                </h2>
-                <p class="section-desc">Your trusted paired devices</p>
-
-                <div class="saved-devices-list" id="savedDevicesList">
-                    <div class="empty-state">
-                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" width="48" height="48">
-                            <circle cx="12" cy="12" r="10"/>
-                            <path d="M8 15h8M9 9h.01M15 9h.01"/>
-                        </svg>
-                        <p>No saved devices yet</p>
-                        <span>Pair with a device to save it here</span>
-                    </div>
-                </div>
+        <!-- DEVICES TAB -->
+        <section class="tab" id="tab-devices">
+            <div class="card glass-card fade-up">
+                <h2 class="card-title">📱 Saved Devices</h2>
+                <p class="card-desc">Trusted devices auto-connect</p>
+                <div id="deviceList" class="device-list"></div>
             </div>
         </section>
 
-        <!-- Tab: Receive -->
-        <section class="tab-content" id="tab-receive">
-            <div class="section-card glass-card">
-                <h2 class="section-title">
-                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="24" height="24">
-                        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
-                        <polyline points="7 10 12 15 17 10"/>
-                        <line x1="12" y1="15" x2="12" y2="3"/>
-                    </svg>
-                    Received Videos
-                </h2>
-                <p class="section-desc">Videos received from other devices</p>
-
-                <div class="received-list" id="receivedList">
-                    <div class="empty-state">
-                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" width="48" height="48">
-                            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
-                            <polyline points="7 10 12 15 17 10"/>
-                            <line x1="12" y1="15" x2="12" y2="3"/>
-                        </svg>
-                        <p>No videos received</p>
-                        <span>Videos will appear here when received</span>
-                    </div>
-                </div>
+        <!-- INBOX TAB -->
+        <section class="tab" id="tab-inbox">
+            <div class="card glass-card fade-up">
+                <h2 class="card-title">📥 Received Videos</h2>
+                <p class="card-desc">Download received videos here</p>
+                <div id="inboxList" class="inbox-list"></div>
             </div>
         </section>
 
-        <!-- Toast Container -->
-        <div class="toast-container" id="toastContainer"></div>
-
-        <!-- Pair Request Modal -->
-        <div class="modal-overlay" id="pairModal" style="display:none;">
+        <!-- PAIR MODAL -->
+        <div class="modal-bg" id="pairModal">
             <div class="modal glass-card">
-                <div class="modal-icon">
-                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" width="48" height="48">
-                        <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/>
-                        <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/>
-                    </svg>
-                </div>
+                <div class="modal-icon">🔗</div>
                 <h3>Pair Request</h3>
-                <p>Device <code id="pairRequestId"></code> wants to connect</p>
-                <div class="modal-actions">
-                    <button class="btn-secondary glass-liquid" id="rejectPairBtn">
-                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="18" height="18">
-                            <line x1="18" y1="6" x2="6" y2="18"/>
-                            <line x1="6" y1="6" x2="18" y2="18"/>
-                        </svg>
-                        Reject
-                    </button>
-                    <button class="btn-primary glass-liquid" id="acceptPairBtn">
-                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="18" height="18">
-                            <polyline points="20 6 9 17 4 12"/>
-                        </svg>
-                        Accept
-                    </button>
+                <p>Device <code id="modalPeerId"></code> wants to connect</p>
+                <div class="modal-btns">
+                    <button class="btn-secondary glass-liquid" id="btnReject">✕ Reject</button>
+                    <button class="btn-primary glass-liquid" id="btnAccept">✓ Accept</button>
                 </div>
             </div>
         </div>
     </div>
 
-    <script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
+    <div class="toast-box" id="toastBox"></div>
+
     <script src="peer.js"></script>
     <script src="app.js"></script>
 </body>
-  </html>
+</html>
