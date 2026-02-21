@@ -1,566 +1,589 @@
 /**
- * Galaxy Transfer - Main Application
+ * Galaxy Transfer - App Controller
+ * All UI logic and interactions
  */
-(function () {
+(function() {
     'use strict';
 
-    // ===== INITIALIZATION =====
-    const pm = new PeerManager();
-    let selectedFiles = [];
-    let receivedVideos = [];
+    // ===== STARS =====
+    const canvas = document.getElementById('starCanvas');
+    const ctx = canvas.getContext('2d');
+    let stars = [];
 
-    // ===== DOM ELEMENTS =====
-    const $ = (sel) => document.querySelector(sel);
-    const $$ = (sel) => document.querySelectorAll(sel);
+    function resizeCanvas() {
+        canvas.width = window.innerWidth;
+        canvas.height = window.innerHeight;
+    }
 
-    // ===== GENERATE STARS =====
-    function generateStars() {
-        const container = $('#stars');
-        const count = 120;
+    function createStars() {
+        stars = [];
+        const count = Math.floor((canvas.width * canvas.height) / 8000);
         for (let i = 0; i < count; i++) {
-            const star = document.createElement('div');
-            star.className = 'star';
-            star.style.left = Math.random() * 100 + '%';
-            star.style.top = Math.random() * 100 + '%';
-            star.style.setProperty('--dur', (2 + Math.random() * 4) + 's');
-            star.style.setProperty('--opac', (0.3 + Math.random() * 0.7));
-            star.style.animationDelay = Math.random() * 5 + 's';
-            star.style.width = (1 + Math.random() * 2) + 'px';
-            star.style.height = star.style.width;
-            container.appendChild(star);
+            stars.push({
+                x: Math.random() * canvas.width,
+                y: Math.random() * canvas.height,
+                r: 0.3 + Math.random() * 1.5,
+                a: Math.random(),
+                da: 0.003 + Math.random() * 0.008,
+                dir: Math.random() > 0.5 ? 1 : -1
+            });
         }
     }
-    generateStars();
 
-    // ===== TOAST =====
-    function showToast(message, type = 'info') {
-        const container = $('#toastContainer');
-        const icons = {
-            success: '✅',
-            error: '❌',
-            info: '💜',
-            warning: '⚠️'
-        };
-
-        const toast = document.createElement('div');
-        toast.className = `toast ${type}`;
-        toast.innerHTML = `<span class="toast-icon">${icons[type]}</span><span>${message}</span>`;
-        container.appendChild(toast);
-
-        setTimeout(() => {
-            toast.classList.add('toast-out');
-            setTimeout(() => toast.remove(), 300);
-        }, 3500);
+    function drawStars() {
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        for (const s of stars) {
+            s.a += s.da * s.dir;
+            if (s.a >= 1 || s.a <= 0) s.dir *= -1;
+            ctx.beginPath();
+            ctx.arc(s.x, s.y, s.r, 0, Math.PI * 2);
+            ctx.fillStyle = `rgba(200,180,255,${s.a * 0.7})`;
+            ctx.fill();
+        }
+        requestAnimationFrame(drawStars);
     }
 
-    // ===== TAB NAVIGATION =====
+    resizeCanvas();
+    createStars();
+    drawStars();
+    window.addEventListener('resize', () => { resizeCanvas(); createStars(); });
+
+    // ===== HELPERS =====
+    const $ = s => document.querySelector(s);
+    const $$ = s => document.querySelectorAll(s);
+
+    function toast(msg, type = 'inf') {
+        const box = $('#toastBox');
+        const icons = { ok: '✅', err: '❌', inf: '💜', wrn: '⚠️' };
+        const t = document.createElement('div');
+        t.className = `toast ${type}`;
+        t.innerHTML = `<span>${icons[type] || '💜'}</span><span>${msg}</span>`;
+        box.appendChild(t);
+        setTimeout(() => { t.classList.add('out'); setTimeout(() => t.remove(), 300); }, 3200);
+    }
+
+    function fmtSize(b) {
+        if (!b) return '0 B';
+        const u = ['B','KB','MB','GB','TB'];
+        const i = Math.floor(Math.log(b) / Math.log(1024));
+        return (b / Math.pow(1024, i)).toFixed(i ? 1 : 0) + ' ' + u[i];
+    }
+
+    // ===== TABS =====
     $$('.nav-btn').forEach(btn => {
         btn.addEventListener('click', () => {
-            const tab = btn.dataset.tab;
             $$('.nav-btn').forEach(b => b.classList.remove('active'));
             btn.classList.add('active');
-            $$('.tab-content').forEach(t => t.classList.remove('active'));
-            $(`#tab-${tab}`).classList.add('active');
-            // Re-trigger animation
-            $(`#tab-${tab}`).style.animation = 'none';
-            $(`#tab-${tab}`).offsetHeight; // reflow
-            $(`#tab-${tab}`).style.animation = '';
+            $$('.tab').forEach(t => t.classList.remove('active'));
+            const tab = $(`#tab-${btn.dataset.tab}`);
+            tab.classList.add('active');
+            tab.style.animation = 'none';
+            tab.offsetHeight;
+            tab.style.animation = '';
         });
     });
 
-    // ===== PEER MANAGER CALLBACKS =====
-    pm.onReady = (id) => {
-        $('#myIdDisplay').textContent = id;
-        $('.device-id-text').textContent = id;
-        showToast('Device ready!', 'success');
+    function switchTab(name) {
+        $$('.nav-btn').forEach(b => {
+            b.classList.toggle('active', b.dataset.tab === name);
+        });
+        $$('.tab').forEach(t => t.classList.remove('active'));
+        $(`#tab-${name}`).classList.add('active');
+    }
+
+    // ===== PEER INIT =====
+    const gp = new GalaxyPeer();
+    let selectedFiles = [];
+
+    gp.onStatus = (s) => {
+        const dot = $('#peerStatus .status-dot');
+        const txt = $('#peerStatusText');
+        dot.className = 'status-dot';
+
+        switch(s) {
+            case 'online':
+                dot.classList.add('online');
+                txt.textContent = 'Connected to network ✓';
+                break;
+            case 'connecting':
+                dot.classList.add('offline');
+                txt.textContent = 'Connecting to network...';
+                break;
+            case 'reconnecting':
+                dot.classList.add('offline');
+                txt.textContent = 'Reconnecting...';
+                break;
+            case 'offline':
+                dot.classList.add('error');
+                txt.textContent = 'Offline';
+                break;
+        }
     };
 
-    pm.onPairRequest = (peerId) => {
-        $('#pairRequestId').textContent = peerId;
-        $('#pairModal').style.display = 'flex';
+    gp.onReady = (id) => {
+        $('#myIdCode').textContent = id;
+        $('#headerIdText').textContent = id;
+        toast('Device ready!', 'ok');
     };
 
-    pm.onPairAccepted = (peerId) => {
-        showToast(`Connected to ${peerId}`, 'success');
-        pm.saveDevice(peerId, `Device`);
-        updateConnectionStatus(peerId, true);
-        updateDevicesList();
-        updateTargetSelect();
+    gp.onError = (e) => {
+        toast(e.message || 'Error occurred', 'err');
     };
 
-    pm.onPairRejected = (peerId) => {
-        showToast('Connection rejected', 'error');
-        updateConnectionStatus(peerId, false);
+    gp.onPairRequest = (pid) => {
+        $('#modalPeerId').textContent = pid;
+        $('#pairModal').classList.add('show');
     };
 
-    pm.onPeerConnected = (peerId) => {
-        showToast(`Device ${peerId} connected`, 'success');
-        pm.saveDevice(peerId, `Device`);
-        updateConnectionStatus(peerId, true);
-        updateDevicesList();
-        updateTargetSelect();
+    gp.onConnected = (pid) => {
+        toast(`Connected: ${pid}`, 'ok');
+        gp.saveDevice(pid);
+        showConn(pid, true);
+        refreshDevices();
+        refreshTargets();
     };
 
-    pm.onPeerDisconnected = (peerId) => {
-        showToast(`${peerId} disconnected`, 'warning');
-        updateConnectionStatus(peerId, false);
-        updateTargetSelect();
+    gp.onPairAccepted = (pid) => {
+        toast(`Paired with ${pid}!`, 'ok');
+        gp.saveDevice(pid);
+        showConn(pid, true);
+        refreshDevices();
+        refreshTargets();
     };
 
-    pm.onFileStart = (info) => {
-        showToast(`Receiving: ${info.name}`, 'info');
-        // Switch to receive tab
-        $$('.nav-btn').forEach(b => b.classList.remove('active'));
-        $$('.nav-btn[data-tab="receive"]').forEach(b => b.classList.add('active'));
-        $$('.tab-content').forEach(t => t.classList.remove('active'));
-        $('#tab-receive').classList.add('active');
-
-        addReceivingProgress(info);
+    gp.onPairRejected = (pid) => {
+        toast('Connection rejected', 'err');
+        showConn(pid, false);
     };
 
-    pm.onTransferProgress = (info) => {
-        if (info.isSending) {
-            updateSendProgress(info);
+    gp.onDisconnected = (pid) => {
+        toast(`${pid} disconnected`, 'wrn');
+        showConn(pid, false);
+        refreshTargets();
+    };
+
+    gp.onFileStart = (m) => {
+        toast(`Receiving: ${m.name}`, 'inf');
+        switchTab('inbox');
+        $('#inboxDot').style.display = 'block';
+        addRecvItem(m);
+    };
+
+    gp.onProgress = (p) => {
+        if (p.sending) {
+            updateSendProg(p);
         } else {
-            updateReceiveProgress(info);
+            updateRecvProg(p);
         }
     };
 
-    pm.onFileComplete = (data) => {
-        showToast(`Received: ${data.name}`, 'success');
-        addReceivedVideo(data);
+    gp.onFileComplete = (data) => {
+        toast(`✅ ${data.name}`, 'ok');
+        finalizeRecv(data);
     };
 
-    pm.onError = (err) => {
-        console.error(err);
-        if (err.message) showToast(err.message, 'error');
-    };
-
-    // ===== PAIR ACTIONS =====
-    $('#pairBtn').addEventListener('click', () => {
-        const id = $('#pairIdInput').value.trim();
-        if (!id) {
-            showToast('Please enter a Device ID', 'warning');
-            return;
-        }
-        if (id === pm.myId) {
-            showToast("You can't connect to yourself!", 'warning');
-            return;
-        }
-
-        showToast('Connecting...', 'info');
-        pm.connectToPeer(id);
-
-        $('#connectionStatus').style.display = 'block';
-        $('#connStatusText').textContent = 'Connecting...';
-        $('#connPeerId').textContent = id;
-        $('.connection-info').classList.remove('connected');
+    // ===== PAIR UI =====
+    $('#btnConnect').addEventListener('click', () => {
+        const id = $('#pairInput').value.trim().toUpperCase();
+        if (!id) { toast('Enter a Device ID', 'wrn'); return; }
+        toast('Connecting...', 'inf');
+        gp.connect(id);
+        showConn(id, null); // null = connecting
     });
 
-    $('#pasteBtn').addEventListener('click', async () => {
+    $('#pairInput').addEventListener('keydown', e => {
+        if (e.key === 'Enter') $('#btnConnect').click();
+    });
+
+    $('#btnPaste').addEventListener('click', async () => {
         try {
-            const text = await navigator.clipboard.readText();
-            $('#pairIdInput').value = text;
-            showToast('Pasted from clipboard', 'success');
+            const t = await navigator.clipboard.readText();
+            $('#pairInput').value = t.trim();
+            toast('Pasted!', 'ok');
         } catch {
-            showToast('Unable to paste', 'error');
+            toast('Paste not available', 'wrn');
         }
     });
 
-    $('#copyIdBtn').addEventListener('click', async () => {
-        try {
-            await navigator.clipboard.writeText(pm.myId);
-            showToast('ID copied!', 'success');
-        } catch {
-            // Fallback
-            const ta = document.createElement('textarea');
-            ta.value = pm.myId;
-            document.body.appendChild(ta);
-            ta.select();
-            document.execCommand('copy');
-            ta.remove();
-            showToast('ID copied!', 'success');
-        }
+    $('#btnCopy').addEventListener('click', () => {
+        const id = gp.myId;
+        if (!id) { toast('ID not ready yet', 'wrn'); return; }
+        copyText(id);
     });
 
-    // Modal actions
-    $('#acceptPairBtn').addEventListener('click', () => {
-        const peerId = $('#pairRequestId').textContent;
-        const conn = pm.pendingPairRequests.get(peerId);
-        if (conn) {
-            pm.acceptPair(conn, peerId);
-            showToast('Connection accepted!', 'success');
-        }
-        $('#pairModal').style.display = 'none';
+    $('#headerBadge').addEventListener('click', () => {
+        const id = gp.myId;
+        if (!id) { toast('ID not ready yet', 'wrn'); return; }
+        copyText(id);
     });
 
-    $('#rejectPairBtn').addEventListener('click', () => {
-        const peerId = $('#pairRequestId').textContent;
-        pm.rejectPair(peerId);
-        showToast('Connection rejected', 'info');
-        $('#pairModal').style.display = 'none';
-    });
-
-    function updateConnectionStatus(peerId, connected) {
-        const status = $('#connectionStatus');
-        status.style.display = 'block';
-        const info = status.querySelector('.connection-info');
-
-        if (connected) {
-            info.classList.add('connected');
-            $('#connStatusText').textContent = 'Connected!';
-            $('#connPeerId').textContent = peerId;
+    function copyText(text) {
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+            navigator.clipboard.writeText(text)
+                .then(() => toast('Copied: ' + text, 'ok'))
+                .catch(() => fallbackCopy(text));
         } else {
-            info.classList.remove('connected');
-            $('#connStatusText').textContent = 'Disconnected';
-            $('#connPeerId').textContent = peerId;
+            fallbackCopy(text);
         }
     }
 
-    // ===== FILE SELECTION =====
-    const dropZone = $('#dropZone');
+    function fallbackCopy(text) {
+        const ta = document.createElement('textarea');
+        ta.value = text;
+        ta.style.cssText = 'position:fixed;left:-9999px;';
+        document.body.appendChild(ta);
+        ta.select();
+        try {
+            document.execCommand('copy');
+            toast('Copied: ' + text, 'ok');
+        } catch {
+            toast('Copy failed. ID: ' + text, 'wrn');
+        }
+        ta.remove();
+    }
+
+    // Modal
+    $('#btnAccept').addEventListener('click', () => {
+        const pid = $('#modalPeerId').textContent;
+        gp.acceptPair(pid);
+        $('#pairModal').classList.remove('show');
+        toast('Accepted!', 'ok');
+    });
+
+    $('#btnReject').addEventListener('click', () => {
+        const pid = $('#modalPeerId').textContent;
+        gp.rejectPair(pid);
+        $('#pairModal').classList.remove('show');
+        toast('Rejected', 'inf');
+    });
+
+    function showConn(pid, state) {
+        const card = $('#connCard');
+        const info = $('#connInfo');
+        const text = $('#connText');
+        const peer = $('#connPeer');
+
+        card.style.display = 'block';
+        peer.textContent = pid;
+
+        if (state === null) {
+            info.className = 'conn-status';
+            text.textContent = 'Connecting...';
+        } else if (state) {
+            info.className = 'conn-status ok';
+            text.textContent = 'Connected!';
+        } else {
+            info.className = 'conn-status';
+            text.textContent = 'Disconnected';
+        }
+    }
+
+    // ===== FILE SELECT =====
+    const dropArea = $('#dropArea');
     const fileInput = $('#fileInput');
 
-    $('#selectFilesBtn').addEventListener('click', (e) => {
+    $('#btnBrowse').addEventListener('click', e => {
         e.stopPropagation();
         fileInput.click();
     });
 
-    dropZone.addEventListener('click', () => {
-        fileInput.click();
-    });
+    dropArea.addEventListener('click', () => fileInput.click());
 
-    fileInput.addEventListener('change', (e) => {
+    fileInput.addEventListener('change', e => {
         addFiles(Array.from(e.target.files));
         fileInput.value = '';
     });
 
-    dropZone.addEventListener('dragover', (e) => {
+    dropArea.addEventListener('dragover', e => {
         e.preventDefault();
-        dropZone.classList.add('drag-over');
+        dropArea.classList.add('over');
     });
-
-    dropZone.addEventListener('dragleave', () => {
-        dropZone.classList.remove('drag-over');
-    });
-
-    dropZone.addEventListener('drop', (e) => {
+    dropArea.addEventListener('dragleave', () => dropArea.classList.remove('over'));
+    dropArea.addEventListener('drop', e => {
         e.preventDefault();
-        dropZone.classList.remove('drag-over');
-        const files = Array.from(e.dataTransfer.files).filter(f => f.type.startsWith('video/'));
-        if (files.length === 0) {
-            showToast('Please drop video files only', 'warning');
-            return;
-        }
-        addFiles(files);
+        dropArea.classList.remove('over');
+        const vids = Array.from(e.dataTransfer.files).filter(f => f.type.startsWith('video/'));
+        if (!vids.length) { toast('Only video files', 'wrn'); return; }
+        addFiles(vids);
     });
 
     function addFiles(files) {
-        files.forEach(f => {
-            if (!selectedFiles.some(sf => sf.name === f.name && sf.size === f.size)) {
+        for (const f of files) {
+            if (!selectedFiles.some(s => s.name === f.name && s.size === f.size)) {
                 selectedFiles.push(f);
             }
-        });
-        renderFileList();
+        }
+        renderFiles();
     }
 
-    function formatSize(bytes) {
-        if (bytes === 0) return '0 B';
-        const k = 1024;
-        const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
-        const i = Math.floor(Math.log(bytes) / Math.log(k));
-        return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
-    }
-
-    function renderFileList() {
-        const section = $('#fileListSection');
+    function renderFiles() {
+        const sec = $('#fileSection');
         const list = $('#fileList');
 
-        if (selectedFiles.length === 0) {
-            section.style.display = 'none';
+        if (!selectedFiles.length) {
+            sec.style.display = 'none';
             return;
         }
 
-        section.style.display = 'block';
-        $('#fileCount').textContent = selectedFiles.length;
+        sec.style.display = 'block';
+        $('#fCount').textContent = selectedFiles.length;
 
-        let totalBytes = 0;
+        let total = 0;
         list.innerHTML = '';
 
-        selectedFiles.forEach((file, idx) => {
-            totalBytes += file.size;
-            const item = document.createElement('div');
-            item.className = 'file-item';
-            item.style.animationDelay = (idx * 0.05) + 's';
+        selectedFiles.forEach((f, i) => {
+            total += f.size;
+            const el = document.createElement('div');
+            el.className = 'f-item';
+            el.style.animationDelay = (i * 0.04) + 's';
 
-            const thumbUrl = URL.createObjectURL(file);
+            let thumb = '<div class="f-thumb">🎬</div>';
+            try {
+                const url = URL.createObjectURL(f);
+                thumb = `<div class="f-thumb"><video src="${url}" muted preload="metadata"></video></div>`;
+            } catch(e) {}
 
-            item.innerHTML = `
-                <div class="file-thumb">
-                    <video src="${thumbUrl}" muted preload="metadata"></video>
+            el.innerHTML = `
+                ${thumb}
+                <div class="f-info">
+                    <div class="f-name" title="${f.name}">${f.name}</div>
+                    <div class="f-size">${fmtSize(f.size)}</div>
                 </div>
-                <div class="file-info">
-                    <div class="file-name" title="${file.name}">${file.name}</div>
-                    <div class="file-size">${formatSize(file.size)}</div>
-                </div>
-                <button class="file-remove" data-index="${idx}" title="Remove">
-                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16">
-                        <line x1="18" y1="6" x2="6" y2="18"/>
-                        <line x1="6" y1="6" x2="18" y2="18"/>
-                    </svg>
-                </button>
+                <button class="f-del" data-i="${i}">✕</button>
             `;
-            list.appendChild(item);
+            list.appendChild(el);
         });
 
-        $('#totalSize').textContent = formatSize(totalBytes);
+        $('#fTotal').textContent = fmtSize(total);
 
-        // Remove buttons
-        list.querySelectorAll('.file-remove').forEach(btn => {
-            btn.addEventListener('click', (e) => {
+        list.querySelectorAll('.f-del').forEach(b => {
+            b.addEventListener('click', e => {
                 e.stopPropagation();
-                const idx = parseInt(btn.dataset.index);
-                selectedFiles.splice(idx, 1);
-                renderFileList();
+                selectedFiles.splice(+b.dataset.i, 1);
+                renderFiles();
             });
         });
     }
 
-    $('#clearAllBtn').addEventListener('click', () => {
+    $('#btnClearFiles').addEventListener('click', () => {
         selectedFiles = [];
-        renderFileList();
+        renderFiles();
     });
 
-    // ===== SEND FILES =====
-    $('#sendBtn').addEventListener('click', async () => {
-        const targetId = $('#targetDeviceSelect').value;
-        if (!targetId) {
-            showToast('Select a connected device first', 'warning');
-            return;
-        }
-        if (selectedFiles.length === 0) {
-            showToast('No files selected', 'warning');
-            return;
-        }
+    // ===== SEND =====
+    $('#btnSend').addEventListener('click', async () => {
+        const target = $('#targetSelect').value;
+        if (!target) { toast('Select a device first', 'wrn'); return; }
+        if (!selectedFiles.length) { toast('No files selected', 'wrn'); return; }
 
-        showToast(`Sending ${selectedFiles.length} video(s)...`, 'info');
-        initSendProgress();
+        toast(`Sending ${selectedFiles.length} video(s)...`, 'inf');
+        initSendProg();
 
         try {
-            await pm.sendFiles(targetId, selectedFiles);
-            showToast('All videos sent successfully!', 'success');
-        } catch (err) {
-            showToast('Transfer failed: ' + err.message, 'error');
+            await gp.sendFiles(target, selectedFiles);
+            toast('All sent! ✅', 'ok');
+        } catch(err) {
+            toast('Failed: ' + (err.message || err), 'err');
         }
     });
 
-    function initSendProgress() {
-        const container = $('#transferProgress');
+    function initSendProg() {
+        const card = $('#progressCard');
         const list = $('#progressList');
-        container.style.display = 'block';
+        card.style.display = 'block';
         list.innerHTML = '';
 
-        selectedFiles.forEach((file, idx) => {
-            const item = document.createElement('div');
-            item.className = 'progress-item';
-            item.id = `send-progress-${idx}`;
-            item.innerHTML = `
-                <div class="progress-item-header">
-                    <span class="progress-item-name">${file.name}</span>
-                    <span class="progress-item-percent">0%</span>
+        selectedFiles.forEach((f, i) => {
+            const el = document.createElement('div');
+            el.className = 'p-item';
+            el.id = `sp-${i}`;
+            el.innerHTML = `
+                <div class="p-head">
+                    <span class="p-name">${f.name}</span>
+                    <span class="p-pct">0%</span>
                 </div>
-                <div class="progress-bar-wrapper glass-card-inner">
-                    <div class="progress-bar"></div>
-                </div>
+                <div class="pbar-wrap glass-inner"><div class="pbar"></div></div>
             `;
-            list.appendChild(item);
+            list.appendChild(el);
         });
 
-        $('#overallProgress').style.width = '0%';
-        $('#overallProgressText').textContent = '0%';
+        $('#overallBar').style.width = '0%';
+        $('#overallText').textContent = '0%';
     }
 
-    function updateSendProgress(info) {
-        // Find by fileId -> index mapping
-        const idx = parseInt(info.fileId.split('_')[2]);
-        const item = $(`#send-progress-${idx}`);
-        if (item) {
-            item.querySelector('.progress-bar').style.width = info.percent + '%';
-            item.querySelector('.progress-item-percent').textContent = info.percent + '%';
-            if (info.percent >= 100) {
-                item.classList.add('completed');
-            }
+    function updateSendProg(p) {
+        const el = $(`#sp-${p.idx}`);
+        if (el) {
+            el.querySelector('.pbar').style.width = p.pct + '%';
+            el.querySelector('.p-pct').textContent = p.pct + '%';
+            if (p.pct >= 100) el.classList.add('done');
         }
-
-        // Update overall progress
-        updateOverallProgress();
+        updateOverall();
     }
 
-    function updateOverallProgress() {
-        const items = $$('#progressList .progress-item');
-        if (items.length === 0) return;
-
-        let total = 0;
-        items.forEach(item => {
-            const pct = parseInt(item.querySelector('.progress-item-percent').textContent);
-            total += pct;
-        });
-        const overall = Math.round(total / items.length);
-        $('#overallProgress').style.width = overall + '%';
-        $('#overallProgressText').textContent = overall + '%';
+    function updateOverall() {
+        const items = $$('#progressList .p-item');
+        if (!items.length) return;
+        let sum = 0;
+        items.forEach(el => { sum += parseInt(el.querySelector('.p-pct').textContent) || 0; });
+        const avg = Math.round(sum / items.length);
+        $('#overallBar').style.width = avg + '%';
+        $('#overallText').textContent = avg + '%';
     }
 
-    // ===== RECEIVING =====
-    function addReceivingProgress(info) {
-        const list = $('#receivedList');
-        // Remove empty state
-        const empty = list.querySelector('.empty-state');
+    // ===== RECEIVE =====
+    function addRecvItem(m) {
+        const list = $('#inboxList');
+        const empty = list.querySelector('.empty');
         if (empty) empty.remove();
 
-        const existing = $(`#recv-${info.fileId}`);
-        if (existing) return;
+        if ($(`#ri-${m.fid}`)) return;
 
-        const item = document.createElement('div');
-        item.className = 'received-item';
-        item.id = `recv-${info.fileId}`;
-        item.innerHTML = `
-            <div class="received-thumb">
-                <div style="width:100%;height:100%;display:flex;align-items:center;justify-content:center;color:var(--purple-400);">
-                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="20" height="20">
-                        <polygon points="5 3 19 12 5 21 5 3"/>
-                    </svg>
-                </div>
-            </div>
-            <div class="received-info">
-                <div class="received-name">${info.name}</div>
-                <div class="received-meta">${formatSize(info.size)} • Receiving...</div>
-                <div class="receiving-bar">
-                    <div class="progress-bar-wrapper glass-card-inner" style="margin-top:6px;">
-                        <div class="progress-bar" style="width:0%"></div>
-                    </div>
+        const el = document.createElement('div');
+        el.className = 'i-item';
+        el.id = `ri-${m.fid}`;
+        el.innerHTML = `
+            <div class="i-thumb">🎬</div>
+            <div class="i-info">
+                <div class="i-name">${m.name}</div>
+                <div class="i-meta">${fmtSize(m.size)} • Receiving...</div>
+                <div class="i-recv-bar">
+                    <div class="pbar-wrap glass-inner"><div class="pbar" style="width:0%"></div></div>
                 </div>
             </div>
         `;
-        list.prepend(item);
+        list.prepend(el);
     }
 
-    function updateReceiveProgress(info) {
-        const item = $(`#recv-${info.fileId}`);
-        if (item) {
-            const bar = item.querySelector('.progress-bar');
-            if (bar) bar.style.width = info.percent + '%';
-            const meta = item.querySelector('.received-meta');
-            if (meta) meta.textContent = `Receiving... ${info.percent}%`;
+    function updateRecvProg(p) {
+        const el = $(`#ri-${p.fid}`);
+        if (el) {
+            const bar = el.querySelector('.pbar');
+            if (bar) bar.style.width = p.pct + '%';
+            const meta = el.querySelector('.i-meta');
+            if (meta) meta.textContent = `${fmtSize(p.done * 64 * 1024)} / ${p.pct}%`;
         }
     }
 
-    function addReceivedVideo(data) {
-        receivedVideos.push(data);
+    function finalizeRecv(data) {
+        const el = $(`#ri-${data.fid}`);
+        if (!el) return;
 
-        const item = $(`#recv-${data.fileId}`);
-        if (item) {
-            const url = URL.createObjectURL(data.blob);
+        const url = URL.createObjectURL(data.blob);
 
-            item.querySelector('.received-thumb').innerHTML = `<video src="${url}" muted preload="metadata"></video>`;
-            item.querySelector('.received-meta').textContent = `${formatSize(data.size)} • From: ${data.from}`;
+        el.querySelector('.i-thumb').innerHTML = `<video src="${url}" muted preload="metadata"></video>`;
+        el.querySelector('.i-meta').textContent = `${fmtSize(data.size)} • From: ${data.from}`;
 
-            const receivingBar = item.querySelector('.receiving-bar');
-            if (receivingBar) receivingBar.remove();
+        const bar = el.querySelector('.i-recv-bar');
+        if (bar) bar.remove();
 
-            // Add download button
-            const dlBtn = document.createElement('button');
-            dlBtn.className = 'received-download';
-            dlBtn.innerHTML = `
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14" style="margin-right:4px;">
-                    <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
-                    <polyline points="7 10 12 15 17 10"/>
-                    <line x1="12" y1="15" x2="12" y2="3"/>
-                </svg>
-                Save
-            `;
-            dlBtn.addEventListener('click', () => {
-                const a = document.createElement('a');
-                a.href = url;
-                a.download = data.name;
-                a.click();
-                showToast(`Downloading ${data.name}`, 'success');
-            });
-            item.appendChild(dlBtn);
-        }
+        const btn = document.createElement('button');
+        btn.className = 'i-dl';
+        btn.textContent = '💾 Save';
+        btn.addEventListener('click', () => {
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = data.name;
+            document.body.appendChild(a);
+            a.click();
+            a.remove();
+            toast('Downloading...', 'ok');
+        });
+        el.appendChild(btn);
     }
 
-    // ===== TARGET DEVICE SELECT =====
-    function updateTargetSelect() {
-        const select = $('#targetDeviceSelect');
-        const connected = pm.getConnectedPeers();
+    // ===== TARGETS =====
+    function refreshTargets() {
+        const sel = $('#targetSelect');
+        const peers = gp.peers();
+        sel.innerHTML = '';
 
-        select.innerHTML = '';
-        if (connected.length === 0) {
-            const opt = document.createElement('option');
-            opt.value = '';
-            opt.textContent = '-- No connected device --';
-            select.appendChild(opt);
+        if (!peers.length) {
+            sel.innerHTML = '<option value="">No device connected</option>';
         } else {
-            connected.forEach(id => {
+            peers.forEach(id => {
                 const opt = document.createElement('option');
                 opt.value = id;
                 opt.textContent = id;
-                select.appendChild(opt);
+                sel.appendChild(opt);
             });
         }
     }
 
     // ===== SAVED DEVICES =====
-    function updateDevicesList() {
-        const list = $('#savedDevicesList');
-        const devices = pm.savedDevices;
+    function refreshDevices() {
+        const list = $('#deviceList');
+        const devs = gp.saved;
 
-        if (devices.length === 0) {
+        if (!devs.length) {
             list.innerHTML = `
-                <div class="empty-state">
-                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" width="48" height="48">
-                        <circle cx="12" cy="12" r="10"/>
-                        <path d="M8 15h8M9 9h.01M15 9h.01"/>
-                    </svg>
-                    <p>No saved devices yet</p>
-                    <span>Pair with a device to save it here</span>
+                <div class="empty">
+                    <div class="empty-icon">📱</div>
+                    <p>No saved devices</p>
+                    <span>Pair a device to save it here</span>
                 </div>
             `;
             return;
         }
 
+        const icons = ['📱','💻','🖥️','🎮','📟'];
         list.innerHTML = '';
-        const emojis = ['📱', '💻', '🖥️', '📟', '🎮'];
 
-        devices.forEach((device, idx) => {
-            const isConnected = pm.isConnected(device.id);
-            const item = document.createElement('div');
-            item.className = 'device-item';
-            item.style.animationDelay = (idx * 0.05) + 's';
-
-            item.innerHTML = `
-                <div class="device-avatar">${emojis[idx % emojis.length]}</div>
-                <div class="device-details">
-                    <div class="device-name">${device.name} ${idx + 1}${isConnected ? ' 🟢' : ''}</div>
-                    <div class="device-id-small">${device.id}</div>
+        devs.forEach((d, i) => {
+            const online = gp.isConn(d.id);
+            const el = document.createElement('div');
+            el.className = 'd-item';
+            el.style.animationDelay = (i * 0.05) + 's';
+            el.innerHTML = `
+                <div class="d-avatar">${icons[i % icons.length]}</div>
+                <div class="d-info">
+                    <div class="d-name">${d.name}${online ? ' 🟢' : ''}</div>
+                    <div class="d-id">${d.id}</div>
                 </div>
-                <div class="device-actions">
-                    <button class="device-connect-btn" data-id="${device.id}">
-                        ${isConnected ? 'Connected' : 'Connect'}
-                    </button>
-                    <button class="device-delete-btn" data-id="${device.id}" title="Remove">
-                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14">
-                            <polyline points="3 6 5 6 21 6"/>
-                            <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
-                        </svg>
-                    </button>
+                <div class="d-actions">
+                    <button class="d-conn" data-id="${d.id}">${online ? 'Online' : 'Connect'}</button>
+                    <button class="d-del" data-id="${d.id}">🗑</button>
                 </div>
             `;
-            list.appendChild(item);
+            list.appendChild(el);
         });
 
-        // Connect buttons
-        list.querySelectorAll('.device-connect-btn').forEach(btn => {
-            btn.addEventListener('click', () => {
-                const id = btn.dataset.id;
-         
+        list.querySelectorAll('.d-conn').forEach(b => {
+            b.addEventListener('click', () => {
+                if (!gp.isConn(b.dataset.id)) {
+                    gp.connect(b.dataset.id);
+                    toast('Connecting...', 'inf');
+                }
+            });
+        });
+
+        list.querySelectorAll('.d-del').forEach(b => {
+            b.addEventListener('click', () => {
+                gp.disconnect(b.dataset.id);
+                gp.removeDevice(b.dataset.id);
+                refreshDevices();
+                refreshTargets();
+                toast('Removed', 'inf');
+            });
+        });
+    }
+
+    // Init empty inbox
+    function initInbox() {
+        const list = $('#inboxList');
+        if (!list.children.length) {
+            list.innerHTML = `
+                <div class="empty">
+                    <div class="empty-icon">📥</div>
+                    <p>No videos received</p>
+                    <span>Videos appear here when received</span>
+                </div>
+            `;
+        }
+    }
+
+    refreshDevices();
+    refreshTargets();
+    initInbox();
+
+})();
