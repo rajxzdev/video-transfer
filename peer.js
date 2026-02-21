@@ -8,7 +8,6 @@ class GalaxyPeer {
         this.receiving = new Map();
         this.CHUNK = 64 * 1024;
         this._ready = false;
-        this._attempt = 0;
 
         this.onReady = null;
         this.onStatus = null;
@@ -22,163 +21,180 @@ class GalaxyPeer {
         this.onFileComplete = null;
         this.onError = null;
 
-        this._boot();
+        this._start();
     }
 
-    _genId() {
-        const c = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
-        let s = '';
-        for (let i = 0; i < 6; i++) s += c[Math.floor(Math.random() * c.length)];
-        return 'GT' + s;
+    _makeId() {
+        var c = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+        var s = '';
+        for (var i = 0; i < 6; i++) {
+            s += c.charAt(Math.floor(Math.random() * c.length));
+        }
+        return 'G' + s;
     }
 
-    _boot() {
-        // Always start fresh ID on first load if none saved
-        let id = localStorage.getItem('gt_id');
-        if (!id) {
-            id = this._genId();
-            localStorage.setItem('gt_id', id);
-        }
-        this._attempt = 0;
-        this._connect(id);
-    }
+    _start() {
+        // Clear any stuck old data
+        var old = localStorage.getItem('gt_id2');
+        var id = old || this._makeId();
 
-    _connect(id) {
-        this._attempt++;
-        if (this._attempt > 8) {
-            // Give up with this ID, make new one
-            id = this._genId();
-            localStorage.setItem('gt_id', id);
-            this._attempt = 1;
-        }
-
-        if (this.peer) {
-            try { this.peer.destroy(); } catch(e) {}
-            this.peer = null;
-        }
-
-        this._ready = false;
         if (this.onStatus) this.onStatus('connecting');
 
+        this._tryConnect(id, 0);
+    }
+
+    _tryConnect(id, attempt) {
+        var self = this;
+
+        if (attempt > 3) {
+            // After 3 fails, new ID
+            id = self._makeId();
+            attempt = 0;
+        }
+
+        if (self.peer) {
+            try { self.peer.destroy(); } catch(e) {}
+            self.peer = null;
+        }
+
+        self._ready = false;
+
+        console.log('Attempt ' + (attempt+1) + ' with ID: ' + id);
+
+        if (self.onStatus) self.onStatus('connecting');
+
+        var p;
         try {
-            // Use default PeerJS cloud server with NO custom config issues
-            this.peer = new Peer(id, {
-                debug: 0,
+            p = new Peer(id, {
+                debug: 1,
                 config: {
                     iceServers: [
-                        { urls: 'stun:stun.l.google.com:19302' },
-                        { urls: 'stun:stun1.l.google.com:19302' },
+                        {urls: 'stun:stun.l.google.com:19302'},
+                        {urls: 'stun:stun1.l.google.com:19302'}
                     ]
                 }
             });
         } catch(e) {
-            console.error('Peer create fail:', e);
-            setTimeout(() => this._connect(this._genId()), 2000);
+            console.error('Create fail:', e);
+            setTimeout(function() {
+                self._tryConnect(self._makeId(), 0);
+            }, 3000);
             return;
         }
 
-        // Timeout: if not open in 10s, retry with new ID
-        const timer = setTimeout(() => {
-            if (!this._ready) {
-                console.warn('Timeout, retrying...');
-                const newId = this._genId();
-                localStorage.setItem('gt_id', newId);
-                this._connect(newId);
-            }
-        }, 10000);
+        self.peer = p;
 
-        this.peer.on('open', (openId) => {
-            clearTimeout(timer);
-            this._ready = true;
-            this._attempt = 0;
-            this.myId = openId;
-            localStorage.setItem('gt_id', openId);
-            if (this.onStatus) this.onStatus('online');
-            if (this.onReady) this.onReady(openId);
-            console.log('Peer ready:', openId);
+        // 12 second timeout
+        var timeout = setTimeout(function() {
+            if (!self._ready) {
+                console.warn('Timeout, retry...');
+                try { p.destroy(); } catch(e) {}
+                self._tryConnect(self._makeId(), attempt + 1);
+            }
+        }, 12000);
+
+        p.on('open', function(openId) {
+            clearTimeout(timeout);
+            self._ready = true;
+            self.myId = openId;
+            localStorage.setItem('gt_id2', openId);
+            if (self.onStatus) self.onStatus('online');
+            if (self.onReady) self.onReady(openId);
+            console.log('READY: ' + openId);
         });
 
-        this.peer.on('connection', (conn) => this._incoming(conn));
+        p.on('connection', function(conn) {
+            self._incoming(conn);
+        });
 
-        this.peer.on('error', (err) => {
-            clearTimeout(timer);
-            console.error('Peer error:', err.type, err);
+        p.on('error', function(err) {
+            clearTimeout(timeout);
+            console.error('PeerError:', err.type, err.message);
 
             if (err.type === 'unavailable-id') {
-                const newId = this._genId();
-                localStorage.setItem('gt_id', newId);
-                setTimeout(() => this._connect(newId), 500);
-            } else if (err.type === 'peer-unavailable') {
-                if (this.onError) this.onError({ message: 'Device not found or offline' });
-            } else if (err.type === 'network' || err.type === 'server-error' || err.type === 'socket-error' || err.type === 'socket-closed') {
-                if (this.onStatus) this.onStatus('reconnecting');
-                setTimeout(() => {
-                    this._connect(localStorage.getItem('gt_id') || this._genId());
-                }, 2000 * this._attempt);
-            } else {
-                if (this.onError) this.onError({ message: err.type + ': ' + (err.message || '') });
+                var nid = self._makeId();
+                localStorage.setItem('gt_id2', nid);
+                setTimeout(function() { self._tryConnect(nid, 0); }, 1000);
+            }
+            else if (err.type === 'peer-unavailable') {
+                if (self.onError) self.onError({message: 'Device not found or offline'});
+            }
+            else if (!self._ready) {
+                setTimeout(function() {
+                    self._tryConnect(self._makeId(), attempt + 1);
+                }, 2000);
+            }
+            else {
+                if (self.onError) self.onError({message: err.message || 'Error'});
             }
         });
 
-        this.peer.on('disconnected', () => {
-            if (this._ready) {
-                if (this.onStatus) this.onStatus('reconnecting');
-                setTimeout(() => {
-                    if (this.peer && !this.peer.destroyed) {
-                        try { this.peer.reconnect(); } catch(e) {
-                            this._connect(localStorage.getItem('gt_id') || this._genId());
-                        }
+        p.on('disconnected', function() {
+            if (self.onStatus) self.onStatus('reconnecting');
+            setTimeout(function() {
+                if (self.peer && !self.peer.destroyed) {
+                    try {
+                        self.peer.reconnect();
+                    } catch(e) {
+                        self._tryConnect(localStorage.getItem('gt_id2') || self._makeId(), 0);
                     }
-                }, 2000);
-            }
+                }
+            }, 3000);
         });
     }
 
-    // ===== CONNECTION HANDLING =====
     connect(peerId) {
-        if (!this._ready) {
-            if (this.onError) this.onError({ message: 'Still connecting to network, please wait...' });
+        var self = this;
+
+        if (!self._ready) {
+            if (self.onError) self.onError({message: 'Still connecting, wait...'});
             return;
         }
-        if (peerId === this.myId) {
-            if (this.onError) this.onError({ message: "Can't connect to yourself" });
+        if (peerId === self.myId) {
+            if (self.onError) self.onError({message: "Can't connect to yourself"});
             return;
         }
-        if (this.conns.has(peerId)) {
-            if (this.onError) this.onError({ message: 'Already connected' });
+        if (self.conns.has(peerId)) {
+            if (self.onError) self.onError({message: 'Already connected'});
             return;
         }
 
-        const trusted = this.saved.some(d => d.id === peerId);
+        var trusted = self.saved.some(function(d) { return d.id === peerId; });
 
-        const conn = this.peer.connect(peerId, {
-            reliable: true,
-            serialization: 'none'
-        });
+        var conn;
+        try {
+            conn = self.peer.connect(peerId, {
+                reliable: true,
+                serialization: 'none'
+            });
+        } catch(e) {
+            if (self.onError) self.onError({message: 'Connect failed'});
+            return;
+        }
 
-        this.pending.set(peerId, conn);
+        self.pending.set(peerId, conn);
 
-        conn.on('open', () => {
-            conn.send(JSON.stringify({ type: 'pair-req', from: this.myId, trusted }));
+        conn.on('open', function() {
+            conn.send(JSON.stringify({type:'pair-req', from:self.myId, trusted:trusted}));
         });
-        conn.on('data', d => this._data(conn, peerId, d));
-        conn.on('close', () => {
-            this.conns.delete(peerId);
-            this.pending.delete(peerId);
-            if (this.onDisconnected) this.onDisconnected(peerId);
+        conn.on('data', function(d) { self._data(conn, peerId, d); });
+        conn.on('close', function() {
+            self.conns.delete(peerId);
+            self.pending.delete(peerId);
+            if (self.onDisconnected) self.onDisconnected(peerId);
         });
-        conn.on('error', e => {
-            console.error('conn error:', e);
-            if (this.onError) this.onError({ message: 'Connection to device failed' });
+        conn.on('error', function(e) {
+            if (self.onError) self.onError({message:'Connection failed'});
         });
     }
 
     _incoming(conn) {
-        const pid = conn.peer;
-        conn.on('data', d => this._data(conn, pid, d));
-        conn.on('close', () => {
-            this.conns.delete(pid);
-            if (this.onDisconnected) this.onDisconnected(pid);
+        var self = this;
+        var pid = conn.peer;
+        conn.on('data', function(d) { self._data(conn, pid, d); });
+        conn.on('close', function() {
+            self.conns.delete(pid);
+            if (self.onDisconnected) self.onDisconnected(pid);
         });
     }
 
@@ -191,180 +207,178 @@ class GalaxyPeer {
     }
 
     _msg(conn, pid, m) {
+        var self = this;
         switch(m.type) {
-            case 'pair-req': {
-                const trusted = this.saved.some(d => d.id === pid);
+            case 'pair-req':
+                var trusted = self.saved.some(function(d){return d.id===pid;});
                 if (trusted || m.trusted) {
-                    this._accept(conn, pid);
+                    self._accept(conn, pid);
                 } else {
-                    this.pending.set(pid, conn);
-                    if (this.onPairRequest) this.onPairRequest(pid);
+                    self.pending.set(pid, conn);
+                    if (self.onPairRequest) self.onPairRequest(pid);
                 }
                 break;
-            }
             case 'pair-ok':
-                this.conns.set(pid, conn);
-                this.pending.delete(pid);
-                if (this.onPairAccepted) this.onPairAccepted(pid);
+                self.conns.set(pid, conn);
+                self.pending.delete(pid);
+                if (self.onPairAccepted) self.onPairAccepted(pid);
                 break;
             case 'pair-no':
-                this.pending.delete(pid);
-                try { conn.close(); } catch(e) {}
-                if (this.onPairRejected) this.onPairRejected(pid);
+                self.pending.delete(pid);
+                try{conn.close();}catch(e){}
+                if (self.onPairRejected) self.onPairRejected(pid);
                 break;
             case 'file-start':
-                this.receiving.set(m.fid, {
-                    name: m.name, size: m.size, mime: m.mime,
-                    chunks: [], got: 0, total: m.total
+                self.receiving.set(m.fid, {
+                    name:m.name, size:m.size, mime:m.mime,
+                    chunks:[], got:0, total:m.total
                 });
-                if (this.onFileStart) this.onFileStart(m);
+                if (self.onFileStart) self.onFileStart(m);
                 break;
-            case 'file-end': {
-                const f = this.receiving.get(m.fid);
+            case 'file-end':
+                var f = self.receiving.get(m.fid);
                 if (f) {
-                    const blob = new Blob(f.chunks, { type: f.mime });
-                    if (this.onFileComplete) this.onFileComplete({
-                        fid: m.fid, name: f.name, size: f.size,
-                        mime: f.mime, blob, from: pid
+                    var blob = new Blob(f.chunks, {type:f.mime});
+                    if (self.onFileComplete) self.onFileComplete({
+                        fid:m.fid, name:f.name, size:f.size,
+                        mime:f.mime, blob:blob, from:pid
                     });
-                    this.receiving.delete(m.fid);
+                    self.receiving.delete(m.fid);
                 }
                 break;
-            }
         }
     }
 
     _chunk(pid, buf) {
-        for (const [fid, f] of this.receiving) {
+        var self = this;
+        self.receiving.forEach(function(f, fid) {
             if (f.got < f.total) {
                 f.chunks.push(buf);
                 f.got++;
-                if (this.onProgress) {
-                    this.onProgress({
-                        fid, name: f.name,
-                        done: f.got, total: f.total,
-                        pct: Math.round(f.got / f.total * 100),
-                        sending: false
+                if (self.onProgress) {
+                    self.onProgress({
+                        fid:fid, name:f.name,
+                        done:f.got, total:f.total,
+                        pct:Math.round(f.got/f.total*100),
+                        sending:false
                     });
                 }
-                break;
+                return;
             }
-        }
+        });
     }
 
     acceptPair(pid) {
-        const conn = this.pending.get(pid);
+        var conn = this.pending.get(pid);
         if (conn) this._accept(conn, pid);
     }
 
     _accept(conn, pid) {
         this.conns.set(pid, conn);
         this.pending.delete(pid);
-        conn.send(JSON.stringify({ type: 'pair-ok', from: this.myId }));
+        conn.send(JSON.stringify({type:'pair-ok', from:this.myId}));
         if (this.onConnected) this.onConnected(pid);
     }
 
     rejectPair(pid) {
-        const conn = this.pending.get(pid);
+        var conn = this.pending.get(pid);
         if (conn) {
-            conn.send(JSON.stringify({ type: 'pair-no' }));
-            setTimeout(() => { try { conn.close(); } catch(e) {} }, 300);
+            conn.send(JSON.stringify({type:'pair-no'}));
+            setTimeout(function(){try{conn.close();}catch(e){}}, 300);
         }
         this.pending.delete(pid);
     }
 
-    // ===== FILE TRANSFER =====
-    async sendFiles(pid, files) {
-        const conn = this.conns.get(pid);
-        if (!conn) throw new Error('Not connected to device');
-        for (let i = 0; i < files.length; i++) {
-            await this._send(conn, files[i], i);
+    sendFiles(pid, files) {
+        var self = this;
+        var conn = self.conns.get(pid);
+        if (!conn) return Promise.reject(new Error('Not connected'));
+
+        var i = 0;
+        function doNext() {
+            if (i >= files.length) return Promise.resolve();
+            var idx = i;
+            i++;
+            return self._send(conn, files[idx], idx).then(doNext);
         }
+        return doNext();
     }
 
     _send(conn, file, idx) {
-        return new Promise((resolve, reject) => {
-            const fid = 'f' + Date.now() + '_' + idx;
-            const total = Math.ceil(file.size / this.CHUNK);
+        var self = this;
+        return new Promise(function(resolve, reject) {
+            var fid = 'f' + Date.now() + '_' + idx;
+            var total = Math.ceil(file.size / self.CHUNK);
 
             conn.send(JSON.stringify({
-                type: 'file-start', fid,
-                name: file.name, size: file.size,
-                mime: file.type, total
+                type:'file-start', fid:fid,
+                name:file.name, size:file.size,
+                mime:file.type, total:total
             }));
 
-            let off = 0, sent = 0;
+            var off = 0;
+            var sent = 0;
 
-            const next = () => {
+            function next() {
                 if (off >= file.size) {
-                    // Small delay to ensure last chunk is processed
-                    setTimeout(() => {
-                        conn.send(JSON.stringify({ type: 'file-end', fid }));
+                    setTimeout(function() {
+                        conn.send(JSON.stringify({type:'file-end', fid:fid}));
                         resolve();
-                    }, 200);
+                    }, 250);
                     return;
                 }
 
-                const blob = file.slice(off, off + this.CHUNK);
-                const r = new FileReader();
-                r.onload = e => {
+                var slice = file.slice(off, off + self.CHUNK);
+                var r = new FileReader();
+                r.onload = function(e) {
                     try { conn.send(e.target.result); } catch(err) { reject(err); return; }
                     sent++;
-                    off += this.CHUNK;
+                    off += self.CHUNK;
 
-                    if (this.onProgress) {
-                        this.onProgress({
-                            fid, name: file.name, idx,
-                            done: sent, total,
-                            pct: Math.round(sent / total * 100),
-                            sending: true
+                    if (self.onProgress) {
+                        self.onProgress({
+                            fid:fid, name:file.name, idx:idx,
+                            done:sent, total:total,
+                            pct:Math.round(sent/total*100),
+                            sending:true
                         });
                     }
 
-                    // Simple back-pressure
-                    const wait = () => {
-                        try {
-                            // Check DataChannel buffer
-                            const dc = conn.dataChannel || (conn.peerConnection && conn.peerConnection.sctp);
-                            const bufSize = conn.bufferSize || (dc && dc.bufferedAmount) || 0;
-                            if (bufSize > 2 * 1024 * 1024) {
-                                setTimeout(wait, 50);
-                                return;
-                            }
-                        } catch(e) {}
-                        setTimeout(next, 1);
-                    };
-                    wait();
+                    setTimeout(next, 3);
                 };
-                r.onerror = () => reject(new Error('File read error'));
-                r.readAsArrayBuffer(blob);
-            };
+                r.onerror = function() { reject(new Error('Read error')); };
+                r.readAsArrayBuffer(slice);
+            }
 
-            setTimeout(next, 200);
+            setTimeout(next, 250);
         });
     }
 
-    // ===== DEVICE STORAGE =====
     saveDevice(pid) {
-        if (!this.saved.some(d => d.id === pid)) {
-            this.saved.push({ id: pid, name: 'Device ' + (this.saved.length + 1), ts: Date.now() });
+        var exists = false;
+        for (var i=0;i<this.saved.length;i++) {
+            if (this.saved[i].id===pid) {exists=true;break;}
+        }
+        if (!exists) {
+            this.saved.push({id:pid, name:'Device '+(this.saved.length+1), ts:Date.now()});
             this._save();
         }
     }
     removeDevice(pid) {
-        this.saved = this.saved.filter(d => d.id !== pid);
+        this.saved = this.saved.filter(function(d){return d.id!==pid;});
         this._save();
     }
     _loadDevices() {
-        try { return JSON.parse(localStorage.getItem('gt_devs') || '[]'); } catch { return []; }
+        try{return JSON.parse(localStorage.getItem('gt_devs')||'[]');}catch(e){return[];}
     }
-    _save() { localStorage.setItem('gt_devs', JSON.stringify(this.saved)); }
-
-    peers() { return [...this.conns.keys()]; }
+    _save() {
+        localStorage.setItem('gt_devs', JSON.stringify(this.saved));
+    }
+    peers() { return Array.from(this.conns.keys()); }
     isConn(pid) { return this.conns.has(pid); }
     disconnect(pid) {
-        const c = this.conns.get(pid);
-        if (c) try { c.close(); } catch(e) {}
+        var c=this.conns.get(pid);
+        if(c)try{c.close();}catch(e){}
         this.conns.delete(pid);
     }
 }
