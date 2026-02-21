@@ -1,39 +1,67 @@
 /**
- * Galaxy Transfer - PeerConnection Manager
- * Handles WebRTC peer connections, pairing, and data transfer
+ * Galaxy Transfer - Peer Connection Manager
+ * Fixed: reliable connection, proper ID generation, multi-server fallback
  */
-class PeerManager {
+class GalaxyPeer {
     constructor() {
         this.peer = null;
-        this.connections = new Map(); // peerId -> DataConnection
         this.myId = null;
-        this.savedDevices = this.loadSavedDevices();
-        this.pendingPairRequests = new Map();
+        this.conns = new Map();
+        this.pending = new Map();
+        this.saved = this._loadDevices();
+        this.receiving = new Map();
+        this.CHUNK = 64 * 1024;
+        this._ready = false;
+        this._retries = 0;
 
-        // Callbacks
+        // callbacks
         this.onReady = null;
-        this.onPeerConnected = null;
-        this.onPeerDisconnected = null;
+        this.onStatus = null;
         this.onPairRequest = null;
+        this.onConnected = null;
+        this.onDisconnected = null;
         this.onPairAccepted = null;
         this.onPairRejected = null;
         this.onFileStart = null;
-        this.onFileChunk = null;
+        this.onProgress = null;
         this.onFileComplete = null;
-        this.onTransferProgress = null;
         this.onError = null;
 
-        this.CHUNK_SIZE = 64 * 1024; // 64KB chunks
-        this.receivingFiles = new Map();
-
-        this.init();
+        this._init();
     }
 
-    init() {
-        const savedId = localStorage.getItem('galaxy_device_id');
-        const peerId = savedId || 'GT-' + this.generateId();
+    _genId() {
+        const c = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+        let s = '';
+        const arr = new Uint8Array(6);
+        crypto.getRandomValues(arr);
+        for (let i = 0; i < 6; i++) s += c[arr[i] % c.length];
+        return 'GT-' + s;
+    }
 
-        this.peer = new Peer(peerId, {
+    _init() {
+        let id = localStorage.getItem('gt_myid');
+        if (!id) {
+            id = this._genId();
+            localStorage.setItem('gt_myid', id);
+        }
+        this._createPeer(id);
+    }
+
+    _createPeer(id) {
+        if (this.peer) {
+            try { this.peer.destroy(); } catch(e) {}
+        }
+
+        this._setStatus('connecting');
+
+        // Use multiple PeerJS servers for reliability
+        const servers = [
+            { host: '0.peerjs.com', port: 443, secure: true, path: '/' },
+            { host: 'peerjs-server.herokuapp.com', port: 443, secure: true, path: '/' },
+        ];
+
+        const cfg = {
             debug: 0,
             config: {
                 iceServers: [
@@ -41,234 +69,220 @@ class PeerManager {
                     { urls: 'stun:stun1.l.google.com:19302' },
                     { urls: 'stun:stun2.l.google.com:19302' },
                     { urls: 'stun:stun3.l.google.com:19302' },
-                    { urls: 'stun:stun4.l.google.com:19302' },
-                    {
-                        urls: 'turn:openrelay.metered.ca:80',
-                        username: 'openrelayproject',
-                        credential: 'openrelayproject'
-                    },
-                    {
-                        urls: 'turn:openrelay.metered.ca:443',
-                        username: 'openrelayproject',
-                        credential: 'openrelayproject'
-                    }
                 ]
             }
+        };
+
+        try {
+            this.peer = new Peer(id, cfg);
+        } catch(e) {
+            this._fallbackInit();
+            return;
+        }
+
+        const timeout = setTimeout(() => {
+            if (!this._ready) {
+                console.warn('PeerJS open timeout, retrying...');
+                this._retry();
+            }
+        }, 8000);
+
+        this.peer.on('open', (openId) => {
+            clearTimeout(timeout);
+            this._ready = true;
+            this._retries = 0;
+            this.myId = openId;
+            localStorage.setItem('gt_myid', openId);
+            this._setStatus('online');
+            if (this.onReady) this.onReady(openId);
         });
 
-        this.peer.on('open', (id) => {
-            this.myId = id;
-            localStorage.setItem('galaxy_device_id', id);
-            if (this.onReady) this.onReady(id);
-        });
-
-        this.peer.on('connection', (conn) => {
-            this.handleIncomingConnection(conn);
-        });
+        this.peer.on('connection', (conn) => this._onIncoming(conn));
 
         this.peer.on('error', (err) => {
-            console.error('Peer error:', err);
+            clearTimeout(timeout);
+            console.error('PeerJS error:', err.type, err.message);
+
             if (err.type === 'unavailable-id') {
-                localStorage.removeItem('galaxy_device_id');
-                const newId = 'GT-' + this.generateId();
-                this.peer = new Peer(newId);
-                this.peer.on('open', (id) => {
-                    this.myId = id;
-                    localStorage.setItem('galaxy_device_id', id);
-                    if (this.onReady) this.onReady(id);
-                });
-                this.peer.on('connection', (conn) => {
-                    this.handleIncomingConnection(conn);
-                });
+                const newId = this._genId();
+                localStorage.setItem('gt_myid', newId);
+                this._ready = false;
+                setTimeout(() => this._createPeer(newId), 500);
+            } else if (err.type === 'server-error' || err.type === 'network' || err.type === 'socket-error') {
+                this._retry();
+            } else if (err.type === 'peer-unavailable') {
+                if (this.onError) this.onError({ message: 'Device not found or offline' });
+            } else {
+                if (this.onError) this.onError({ message: err.message || 'Connection error' });
             }
-            if (this.onError) this.onError(err);
         });
 
         this.peer.on('disconnected', () => {
+            this._setStatus('reconnecting');
             setTimeout(() => {
                 if (this.peer && !this.peer.destroyed) {
-                    this.peer.reconnect();
+                    try { this.peer.reconnect(); } catch(e) { this._retry(); }
                 }
-            }, 3000);
+            }, 2000);
+        });
+
+        this.peer.on('close', () => {
+            this._ready = false;
+            this._setStatus('offline');
         });
     }
 
-    generateId() {
-        const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
-        let result = '';
-        for (let i = 0; i < 6; i++) {
-            result += chars.charAt(Math.floor(Math.random() * chars.length));
+    _retry() {
+        this._retries++;
+        if (this._retries > 5) {
+            this._fallbackInit();
+            return;
         }
-        return result;
+        this._ready = false;
+        const delay = Math.min(1000 * this._retries, 5000);
+        this._setStatus('reconnecting');
+        setTimeout(() => {
+            const id = localStorage.getItem('gt_myid') || this._genId();
+            this._createPeer(id);
+        }, delay);
     }
 
-    connectToPeer(peerId) {
-        if (this.connections.has(peerId)) {
-            if (this.onError) this.onError({ type: 'already-connected', message: 'Already connected to this device' });
+    _fallbackInit() {
+        // Generate new ID and try fresh
+        const id = this._genId();
+        localStorage.setItem('gt_myid', id);
+        this._retries = 0;
+        this._setStatus('connecting');
+        setTimeout(() => this._createPeer(id), 1000);
+    }
+
+    _setStatus(s) {
+        if (this.onStatus) this.onStatus(s);
+    }
+
+    // ===== CONNECTIONS =====
+    connect(peerId) {
+        if (!this._ready || !this.peer) {
+            if (this.onError) this.onError({ message: 'Not connected to network yet. Please wait.' });
+            return;
+        }
+        if (this.conns.has(peerId)) {
+            if (this.onError) this.onError({ message: 'Already connected to this device' });
+            return;
+        }
+        if (peerId === this.myId) {
+            if (this.onError) this.onError({ message: "Can't connect to yourself!" });
             return;
         }
 
-        // Check if this is a saved/trusted device
-        const isTrusted = this.savedDevices.some(d => d.id === peerId);
+        const trusted = this.saved.some(d => d.id === peerId);
 
-        const conn = this.peer.connect(peerId, {
-            reliable: true,
-            serialization: 'none',
-            metadata: {
-                type: 'pair-request',
-                fromId: this.myId,
-                trusted: isTrusted
-            }
-        });
-
-        conn.on('open', () => {
-            // Send pair request message
-            const msg = JSON.stringify({
-                type: 'pair-request',
-                fromId: this.myId,
-                trusted: isTrusted
+        try {
+            const conn = this.peer.connect(peerId, {
+                reliable: true,
+                serialization: 'none',
+                metadata: { type: 'pair', from: this.myId, trusted }
             });
-            conn.send(msg);
-        });
 
-        conn.on('data', (data) => {
-            this.handleData(conn, peerId, data);
-        });
+            this.pending.set(peerId, conn);
 
-        conn.on('close', () => {
-            this.connections.delete(peerId);
-            if (this.onPeerDisconnected) this.onPeerDisconnected(peerId);
-        });
+            conn.on('open', () => {
+                conn.send(JSON.stringify({ type: 'pair-req', from: this.myId, trusted }));
+            });
 
-        conn.on('error', (err) => {
-            console.error('Connection error:', err);
-            if (this.onError) this.onError(err);
-        });
-
-        // Store temporarily
-        this.pendingPairRequests.set(peerId, conn);
-    }
-
-    handleIncomingConnection(conn) {
-        const peerId = conn.peer;
-
-        conn.on('open', () => {
-            // Wait for pair request message
-        });
-
-        conn.on('data', (data) => {
-            this.handleData(conn, peerId, data);
-        });
-
-        conn.on('close', () => {
-            this.connections.delete(peerId);
-            if (this.onPeerDisconnected) this.onPeerDisconnected(peerId);
-        });
-
-        conn.on('error', (err) => {
-            console.error('Connection error:', err);
-        });
-    }
-
-    handleData(conn, peerId, data) {
-        // Check if it's a string message (control messages)
-        if (typeof data === 'string') {
-            try {
-                const msg = JSON.parse(data);
-                this.handleControlMessage(conn, peerId, msg);
-            } catch (e) {
-                // Not JSON, ignore
-            }
-        } else if (data instanceof ArrayBuffer) {
-            // Binary data - file chunk
-            this.handleFileChunk(peerId, data);
+            conn.on('data', (d) => this._handle(conn, peerId, d));
+            conn.on('close', () => {
+                this.conns.delete(peerId);
+                this.pending.delete(peerId);
+                if (this.onDisconnected) this.onDisconnected(peerId);
+            });
+            conn.on('error', (e) => {
+                console.error('Conn err:', e);
+                if (this.onError) this.onError({ message: 'Connection failed' });
+            });
+        } catch(e) {
+            if (this.onError) this.onError({ message: 'Failed to connect: ' + e.message });
         }
     }
 
-    handleControlMessage(conn, peerId, msg) {
-        switch (msg.type) {
-            case 'pair-request': {
-                // Check if this device is trusted
-                const isTrusted = this.savedDevices.some(d => d.id === peerId);
-                if (isTrusted || msg.trusted) {
-                    // Auto accept trusted devices
-                    this.acceptPair(conn, peerId);
+    _onIncoming(conn) {
+        const pid = conn.peer;
+        conn.on('data', (d) => this._handle(conn, pid, d));
+        conn.on('close', () => {
+            this.conns.delete(pid);
+            if (this.onDisconnected) this.onDisconnected(pid);
+        });
+        conn.on('error', (e) => console.error('Incoming err:', e));
+    }
+
+    _handle(conn, pid, data) {
+        if (typeof data === 'string') {
+            try {
+                const m = JSON.parse(data);
+                this._ctrl(conn, pid, m);
+            } catch(e) {}
+        } else if (data instanceof ArrayBuffer) {
+            this._chunk(pid, data);
+        }
+    }
+
+    _ctrl(conn, pid, m) {
+        switch(m.type) {
+            case 'pair-req': {
+                const trusted = this.saved.some(d => d.id === pid);
+                if (trusted || m.trusted) {
+                    this._acceptPair(conn, pid);
                 } else {
-                    // Show pair request to user
-                    this.pendingPairRequests.set(peerId, conn);
-                    if (this.onPairRequest) this.onPairRequest(peerId, conn);
+                    this.pending.set(pid, conn);
+                    if (this.onPairRequest) this.onPairRequest(pid);
                 }
                 break;
             }
-            case 'pair-accepted': {
-                this.connections.set(peerId, conn);
-                this.pendingPairRequests.delete(peerId);
-                if (this.onPairAccepted) this.onPairAccepted(peerId);
+            case 'pair-ok': {
+                this.conns.set(pid, conn);
+                this.pending.delete(pid);
+                if (this.onPairAccepted) this.onPairAccepted(pid);
                 break;
             }
-            case 'pair-rejected': {
-                this.pendingPairRequests.delete(peerId);
-                conn.close();
-                if (this.onPairRejected) this.onPairRejected(peerId);
+            case 'pair-no': {
+                this.pending.delete(pid);
+                try { conn.close(); } catch(e) {}
+                if (this.onPairRejected) this.onPairRejected(pid);
                 break;
             }
             case 'file-start': {
-                this.receivingFiles.set(msg.fileId, {
-                    name: msg.name,
-                    size: msg.size,
-                    type: msg.mimeType,
-                    chunks: [],
-                    received: 0,
-                    totalChunks: msg.totalChunks
+                this.receiving.set(m.fid, {
+                    name: m.name, size: m.size, mime: m.mime,
+                    chunks: [], got: 0, total: m.chunks
                 });
-                if (this.onFileStart) this.onFileStart(msg);
+                if (this.onFileStart) this.onFileStart(m);
                 break;
             }
-            case 'file-chunk-info': {
-                // Next chunk is binary
-                const fileData = this.receivingFiles.get(msg.fileId);
-                if (fileData) {
-                    fileData._nextChunkIndex = msg.chunkIndex;
-                }
-                break;
-            }
-            case 'file-complete': {
-                const fileInfo = this.receivingFiles.get(msg.fileId);
-                if (fileInfo) {
-                    const blob = new Blob(fileInfo.chunks, { type: fileInfo.type });
+            case 'file-end': {
+                const f = this.receiving.get(m.fid);
+                if (f) {
+                    const blob = new Blob(f.chunks, { type: f.mime });
                     if (this.onFileComplete) this.onFileComplete({
-                        fileId: msg.fileId,
-                        name: fileInfo.name,
-                        size: fileInfo.size,
-                        type: fileInfo.type,
-                        blob: blob,
-                        from: peerId
+                        fid: m.fid, name: f.name, size: f.size, mime: f.mime, blob, from: pid
                     });
-                    this.receivingFiles.delete(msg.fileId);
+                    this.receiving.delete(m.fid);
                 }
-                break;
-            }
-            case 'all-transfers-complete': {
-                // All files done
                 break;
             }
         }
     }
 
-    handleFileChunk(peerId, data) {
-        // Find which file this chunk belongs to (latest active receive)
-        for (const [fileId, fileData] of this.receivingFiles) {
-            if (fileData.received < fileData.totalChunks) {
-                fileData.chunks.push(data);
-                fileData.received++;
-
-                if (this.onTransferProgress) {
-                    this.onTransferProgress({
-                        fileId: fileId,
-                        name: fileData.name,
-                        received: fileData.received,
-                        total: fileData.totalChunks,
-                        percent: Math.round((fileData.received / fileData.totalChunks) * 100)
+    _chunk(pid, buf) {
+        for (const [fid, f] of this.receiving) {
+            if (f.got < f.total) {
+                f.chunks.push(buf);
+                f.got++;
+                if (this.onProgress) {
+                    this.onProgress({
+                        fid, name: f.name,
+                        done: f.got, total: f.total,
+                        pct: Math.round(f.got / f.total * 100),
+                        sending: false
                     });
                 }
                 break;
@@ -276,164 +290,125 @@ class PeerManager {
         }
     }
 
-    acceptPair(conn, peerId) {
-        this.connections.set(peerId, conn);
-        this.pendingPairRequests.delete(peerId);
-
-        const msg = JSON.stringify({
-            type: 'pair-accepted',
-            fromId: this.myId
-        });
-        conn.send(msg);
-
-        if (this.onPeerConnected) this.onPeerConnected(peerId);
+    acceptPair(pid) {
+        const conn = this.pending.get(pid);
+        if (conn) this._acceptPair(conn, pid);
     }
 
-    rejectPair(peerId) {
-        const conn = this.pendingPairRequests.get(peerId);
+    _acceptPair(conn, pid) {
+        this.conns.set(pid, conn);
+        this.pending.delete(pid);
+        conn.send(JSON.stringify({ type: 'pair-ok', from: this.myId }));
+        if (this.onConnected) this.onConnected(pid);
+    }
+
+    rejectPair(pid) {
+        const conn = this.pending.get(pid);
         if (conn) {
-            const msg = JSON.stringify({
-                type: 'pair-rejected',
-                fromId: this.myId
-            });
-            conn.send(msg);
-            setTimeout(() => conn.close(), 500);
+            conn.send(JSON.stringify({ type: 'pair-no', from: this.myId }));
+            setTimeout(() => { try { conn.close(); } catch(e) {} }, 500);
         }
-        this.pendingPairRequests.delete(peerId);
+        this.pending.delete(pid);
     }
 
-    async sendFiles(peerId, files) {
-        const conn = this.connections.get(peerId);
-        if (!conn) {
-            if (this.onError) this.onError({ message: 'Not connected to this device' });
-            return;
-        }
-
+    // ===== TRANSFER =====
+    async sendFiles(pid, files) {
+        const conn = this.conns.get(pid);
+        if (!conn) throw new Error('Not connected');
         for (let i = 0; i < files.length; i++) {
-            await this.sendFile(conn, files[i], i);
+            await this._sendOne(conn, files[i], i);
         }
-
-        conn.send(JSON.stringify({ type: 'all-transfers-complete' }));
     }
 
-    sendFile(conn, file, index) {
-        return new Promise((resolve) => {
-            const fileId = 'f_' + Date.now() + '_' + index;
-            const totalChunks = Math.ceil(file.size / this.CHUNK_SIZE);
+    _sendOne(conn, file, idx) {
+        return new Promise((resolve, reject) => {
+            const fid = 'f' + Date.now() + '_' + idx;
+            const total = Math.ceil(file.size / this.CHUNK);
 
-            // Send file metadata
             conn.send(JSON.stringify({
-                type: 'file-start',
-                fileId: fileId,
-                name: file.name,
-                size: file.size,
-                mimeType: file.type,
-                totalChunks: totalChunks
+                type: 'file-start', fid, name: file.name,
+                size: file.size, mime: file.type, chunks: total
             }));
 
-            let offset = 0;
-            let chunkIndex = 0;
+            let offset = 0, sent = 0;
 
-            const sendNextChunk = () => {
+            const next = () => {
                 if (offset >= file.size) {
-                    conn.send(JSON.stringify({
-                        type: 'file-complete',
-                        fileId: fileId
-                    }));
+                    conn.send(JSON.stringify({ type: 'file-end', fid }));
                     resolve();
                     return;
                 }
 
-                const slice = file.slice(offset, offset + this.CHUNK_SIZE);
-                const reader = new FileReader();
-
-                reader.onload = (e) => {
+                const slice = file.slice(offset, offset + this.CHUNK);
+                const r = new FileReader();
+                r.onload = (e) => {
                     try {
                         conn.send(e.target.result);
-                    } catch (err) {
-                        console.error('Send chunk error:', err);
+                    } catch(err) {
+                        reject(err);
+                        return;
                     }
+                    sent++;
+                    offset += this.CHUNK;
 
-                    chunkIndex++;
-                    offset += this.CHUNK_SIZE;
-
-                    if (this.onTransferProgress) {
-                        this.onTransferProgress({
-                            fileId: fileId,
-                            name: file.name,
-                            sent: chunkIndex,
-                            total: totalChunks,
-                            percent: Math.round((chunkIndex / totalChunks) * 100),
-                            isSending: true
+                    if (this.onProgress) {
+                        this.onProgress({
+                            fid, name: file.name,
+                            done: sent, total,
+                            pct: Math.round(sent / total * 100),
+                            sending: true, idx
                         });
                     }
 
-                    // Throttle to prevent buffer overflow
-                    if (conn.bufferSize > 8 * 1024 * 1024) {
-                        const checkBuffer = setInterval(() => {
-                            if (conn.bufferSize < 2 * 1024 * 1024) {
-                                clearInterval(checkBuffer);
-                                sendNextChunk();
-                            }
-                        }, 100);
+                    // Back-pressure handling
+                    const checkSend = () => {
+                        if (conn.bufferSize > 4 * 1024 * 1024) {
+                            setTimeout(checkSend, 50);
+                        } else {
+                            setTimeout(next, 2);
+                        }
+                    };
+
+                    if (conn.peerConnection) {
+                        checkSend();
                     } else {
-                        setTimeout(sendNextChunk, 5);
+                        setTimeout(next, 5);
                     }
                 };
-
-                reader.readAsArrayBuffer(slice);
+                r.onerror = () => reject(new Error('Read error'));
+                r.readAsArrayBuffer(slice);
             };
 
-            // Small delay to ensure metadata is sent first
-            setTimeout(sendNextChunk, 100);
+            setTimeout(next, 150);
         });
     }
 
-    // Device management
-    saveDevice(peerId, name) {
-        const existing = this.savedDevices.find(d => d.id === peerId);
-        if (!existing) {
-            this.savedDevices.push({
-                id: peerId,
-                name: name || `Device ${this.savedDevices.length + 1}`,
-                savedAt: Date.now()
-            });
-            this.persistSavedDevices();
+    // ===== DEVICE MANAGEMENT =====
+    saveDevice(pid) {
+        if (!this.saved.some(d => d.id === pid)) {
+            this.saved.push({ id: pid, name: 'Device ' + (this.saved.length + 1), ts: Date.now() });
+            this._persist();
         }
     }
 
-    removeDevice(peerId) {
-        this.savedDevices = this.savedDevices.filter(d => d.id !== peerId);
-        this.persistSavedDevices();
+    removeDevice(pid) {
+        this.saved = this.saved.filter(d => d.id !== pid);
+        this._persist();
     }
 
-    loadSavedDevices() {
-        try {
-            return JSON.parse(localStorage.getItem('galaxy_saved_devices') || '[]');
-        } catch {
-            return [];
-        }
+    _loadDevices() {
+        try { return JSON.parse(localStorage.getItem('gt_devs') || '[]'); } catch { return []; }
     }
 
-    persistSavedDevices() {
-        localStorage.setItem('galaxy_saved_devices', JSON.stringify(this.savedDevices));
+    _persist() {
+        localStorage.setItem('gt_devs', JSON.stringify(this.saved));
     }
 
-    getConnectedPeers() {
-        return Array.from(this.connections.keys());
+    peers() { return [...this.conns.keys()]; }
+    isConn(pid) { return this.conns.has(pid); }
+    disconnect(pid) {
+        const c = this.conns.get(pid);
+        if (c) try { c.close(); } catch(e) {}
+        this.conns.delete(pid);
     }
-
-    isConnected(peerId) {
-        return this.connections.has(peerId);
-    }
-
-    disconnect(peerId) {
-        const conn = this.connections.get(peerId);
-        if (conn) conn.close();
-        this.connections.delete(peerId);
-    }
-
-    destroy() {
-        if (this.peer) this.peer.destroy();
-    }
-          }
+}
