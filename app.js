@@ -1,370 +1,589 @@
-class GalaxyPeer {
-    constructor() {
-        this.peer = null;
-        this.myId = null;
-        this.conns = new Map();
-        this.pending = new Map();
-        this.saved = this._loadDevices();
-        this.receiving = new Map();
-        this.CHUNK = 64 * 1024;
-        this._ready = false;
-        this._attempt = 0;
+/**
+ * Galaxy Transfer - App Controller
+ * All UI logic and interactions
+ */
+(function() {
+    'use strict';
 
-        this.onReady = null;
-        this.onStatus = null;
-        this.onPairRequest = null;
-        this.onConnected = null;
-        this.onDisconnected = null;
-        this.onPairAccepted = null;
-        this.onPairRejected = null;
-        this.onFileStart = null;
-        this.onProgress = null;
-        this.onFileComplete = null;
-        this.onError = null;
+    // ===== STARS =====
+    const canvas = document.getElementById('starCanvas');
+    const ctx = canvas.getContext('2d');
+    let stars = [];
 
-        this._boot();
+    function resizeCanvas() {
+        canvas.width = window.innerWidth;
+        canvas.height = window.innerHeight;
     }
 
-    _genId() {
-        const c = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
-        let s = '';
-        for (let i = 0; i < 6; i++) s += c[Math.floor(Math.random() * c.length)];
-        return 'GT' + s;
+    function createStars() {
+        stars = [];
+        const count = Math.floor((canvas.width * canvas.height) / 8000);
+        for (let i = 0; i < count; i++) {
+            stars.push({
+                x: Math.random() * canvas.width,
+                y: Math.random() * canvas.height,
+                r: 0.3 + Math.random() * 1.5,
+                a: Math.random(),
+                da: 0.003 + Math.random() * 0.008,
+                dir: Math.random() > 0.5 ? 1 : -1
+            });
+        }
     }
 
-    _boot() {
-        // Always start fresh ID on first load if none saved
-        let id = localStorage.getItem('gt_id');
-        if (!id) {
-            id = this._genId();
-            localStorage.setItem('gt_id', id);
+    function drawStars() {
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        for (const s of stars) {
+            s.a += s.da * s.dir;
+            if (s.a >= 1 || s.a <= 0) s.dir *= -1;
+            ctx.beginPath();
+            ctx.arc(s.x, s.y, s.r, 0, Math.PI * 2);
+            ctx.fillStyle = `rgba(200,180,255,${s.a * 0.7})`;
+            ctx.fill();
         }
-        this._attempt = 0;
-        this._connect(id);
+        requestAnimationFrame(drawStars);
     }
 
-    _connect(id) {
-        this._attempt++;
-        if (this._attempt > 8) {
-            // Give up with this ID, make new one
-            id = this._genId();
-            localStorage.setItem('gt_id', id);
-            this._attempt = 1;
+    resizeCanvas();
+    createStars();
+    drawStars();
+    window.addEventListener('resize', () => { resizeCanvas(); createStars(); });
+
+    // ===== HELPERS =====
+    const $ = s => document.querySelector(s);
+    const $$ = s => document.querySelectorAll(s);
+
+    function toast(msg, type = 'inf') {
+        const box = $('#toastBox');
+        const icons = { ok: '✅', err: '❌', inf: '💜', wrn: '⚠️' };
+        const t = document.createElement('div');
+        t.className = `toast ${type}`;
+        t.innerHTML = `<span>${icons[type] || '💜'}</span><span>${msg}</span>`;
+        box.appendChild(t);
+        setTimeout(() => { t.classList.add('out'); setTimeout(() => t.remove(), 300); }, 3200);
+    }
+
+    function fmtSize(b) {
+        if (!b) return '0 B';
+        const u = ['B','KB','MB','GB','TB'];
+        const i = Math.floor(Math.log(b) / Math.log(1024));
+        return (b / Math.pow(1024, i)).toFixed(i ? 1 : 0) + ' ' + u[i];
+    }
+
+    // ===== TABS =====
+    $$('.nav-btn').forEach(btn => {
+        btn.addEventListener('click', () => {
+            $$('.nav-btn').forEach(b => b.classList.remove('active'));
+            btn.classList.add('active');
+            $$('.tab').forEach(t => t.classList.remove('active'));
+            const tab = $(`#tab-${btn.dataset.tab}`);
+            tab.classList.add('active');
+            tab.style.animation = 'none';
+            tab.offsetHeight;
+            tab.style.animation = '';
+        });
+    });
+
+    function switchTab(name) {
+        $$('.nav-btn').forEach(b => {
+            b.classList.toggle('active', b.dataset.tab === name);
+        });
+        $$('.tab').forEach(t => t.classList.remove('active'));
+        $(`#tab-${name}`).classList.add('active');
+    }
+
+    // ===== PEER INIT =====
+    const gp = new GalaxyPeer();
+    let selectedFiles = [];
+
+    gp.onStatus = (s) => {
+        const dot = $('#peerStatus .status-dot');
+        const txt = $('#peerStatusText');
+        dot.className = 'status-dot';
+
+        switch(s) {
+            case 'online':
+                dot.classList.add('online');
+                txt.textContent = 'Connected to network ✓';
+                break;
+            case 'connecting':
+                dot.classList.add('offline');
+                txt.textContent = 'Connecting to network...';
+                break;
+            case 'reconnecting':
+                dot.classList.add('offline');
+                txt.textContent = 'Reconnecting...';
+                break;
+            case 'offline':
+                dot.classList.add('error');
+                txt.textContent = 'Offline';
+                break;
+        }
+    };
+
+    gp.onReady = (id) => {
+        $('#myIdCode').textContent = id;
+        $('#headerIdText').textContent = id;
+        toast('Device ready!', 'ok');
+    };
+
+    gp.onError = (e) => {
+        toast(e.message || 'Error occurred', 'err');
+    };
+
+    gp.onPairRequest = (pid) => {
+        $('#modalPeerId').textContent = pid;
+        $('#pairModal').classList.add('show');
+    };
+
+    gp.onConnected = (pid) => {
+        toast(`Connected: ${pid}`, 'ok');
+        gp.saveDevice(pid);
+        showConn(pid, true);
+        refreshDevices();
+        refreshTargets();
+    };
+
+    gp.onPairAccepted = (pid) => {
+        toast(`Paired with ${pid}!`, 'ok');
+        gp.saveDevice(pid);
+        showConn(pid, true);
+        refreshDevices();
+        refreshTargets();
+    };
+
+    gp.onPairRejected = (pid) => {
+        toast('Connection rejected', 'err');
+        showConn(pid, false);
+    };
+
+    gp.onDisconnected = (pid) => {
+        toast(`${pid} disconnected`, 'wrn');
+        showConn(pid, false);
+        refreshTargets();
+    };
+
+    gp.onFileStart = (m) => {
+        toast(`Receiving: ${m.name}`, 'inf');
+        switchTab('inbox');
+        $('#inboxDot').style.display = 'block';
+        addRecvItem(m);
+    };
+
+    gp.onProgress = (p) => {
+        if (p.sending) {
+            updateSendProg(p);
+        } else {
+            updateRecvProg(p);
+        }
+    };
+
+    gp.onFileComplete = (data) => {
+        toast(`✅ ${data.name}`, 'ok');
+        finalizeRecv(data);
+    };
+
+    // ===== PAIR UI =====
+    $('#btnConnect').addEventListener('click', () => {
+        const id = $('#pairInput').value.trim().toUpperCase();
+        if (!id) { toast('Enter a Device ID', 'wrn'); return; }
+        toast('Connecting...', 'inf');
+        gp.connect(id);
+        showConn(id, null); // null = connecting
+    });
+
+    $('#pairInput').addEventListener('keydown', e => {
+        if (e.key === 'Enter') $('#btnConnect').click();
+    });
+
+    $('#btnPaste').addEventListener('click', async () => {
+        try {
+            const t = await navigator.clipboard.readText();
+            $('#pairInput').value = t.trim();
+            toast('Pasted!', 'ok');
+        } catch {
+            toast('Paste not available', 'wrn');
+        }
+    });
+
+    $('#btnCopy').addEventListener('click', () => {
+        const id = gp.myId;
+        if (!id) { toast('ID not ready yet', 'wrn'); return; }
+        copyText(id);
+    });
+
+    $('#headerBadge').addEventListener('click', () => {
+        const id = gp.myId;
+        if (!id) { toast('ID not ready yet', 'wrn'); return; }
+        copyText(id);
+    });
+
+    function copyText(text) {
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+            navigator.clipboard.writeText(text)
+                .then(() => toast('Copied: ' + text, 'ok'))
+                .catch(() => fallbackCopy(text));
+        } else {
+            fallbackCopy(text);
+        }
+    }
+
+    function fallbackCopy(text) {
+        const ta = document.createElement('textarea');
+        ta.value = text;
+        ta.style.cssText = 'position:fixed;left:-9999px;';
+        document.body.appendChild(ta);
+        ta.select();
+        try {
+            document.execCommand('copy');
+            toast('Copied: ' + text, 'ok');
+        } catch {
+            toast('Copy failed. ID: ' + text, 'wrn');
+        }
+        ta.remove();
+    }
+
+    // Modal
+    $('#btnAccept').addEventListener('click', () => {
+        const pid = $('#modalPeerId').textContent;
+        gp.acceptPair(pid);
+        $('#pairModal').classList.remove('show');
+        toast('Accepted!', 'ok');
+    });
+
+    $('#btnReject').addEventListener('click', () => {
+        const pid = $('#modalPeerId').textContent;
+        gp.rejectPair(pid);
+        $('#pairModal').classList.remove('show');
+        toast('Rejected', 'inf');
+    });
+
+    function showConn(pid, state) {
+        const card = $('#connCard');
+        const info = $('#connInfo');
+        const text = $('#connText');
+        const peer = $('#connPeer');
+
+        card.style.display = 'block';
+        peer.textContent = pid;
+
+        if (state === null) {
+            info.className = 'conn-status';
+            text.textContent = 'Connecting...';
+        } else if (state) {
+            info.className = 'conn-status ok';
+            text.textContent = 'Connected!';
+        } else {
+            info.className = 'conn-status';
+            text.textContent = 'Disconnected';
+        }
+    }
+
+    // ===== FILE SELECT =====
+    const dropArea = $('#dropArea');
+    const fileInput = $('#fileInput');
+
+    $('#btnBrowse').addEventListener('click', e => {
+        e.stopPropagation();
+        fileInput.click();
+    });
+
+    dropArea.addEventListener('click', () => fileInput.click());
+
+    fileInput.addEventListener('change', e => {
+        addFiles(Array.from(e.target.files));
+        fileInput.value = '';
+    });
+
+    dropArea.addEventListener('dragover', e => {
+        e.preventDefault();
+        dropArea.classList.add('over');
+    });
+    dropArea.addEventListener('dragleave', () => dropArea.classList.remove('over'));
+    dropArea.addEventListener('drop', e => {
+        e.preventDefault();
+        dropArea.classList.remove('over');
+        const vids = Array.from(e.dataTransfer.files).filter(f => f.type.startsWith('video/'));
+        if (!vids.length) { toast('Only video files', 'wrn'); return; }
+        addFiles(vids);
+    });
+
+    function addFiles(files) {
+        for (const f of files) {
+            if (!selectedFiles.some(s => s.name === f.name && s.size === f.size)) {
+                selectedFiles.push(f);
+            }
+        }
+        renderFiles();
+    }
+
+    function renderFiles() {
+        const sec = $('#fileSection');
+        const list = $('#fileList');
+
+        if (!selectedFiles.length) {
+            sec.style.display = 'none';
+            return;
         }
 
-        if (this.peer) {
-            try { this.peer.destroy(); } catch(e) {}
-            this.peer = null;
-        }
+        sec.style.display = 'block';
+        $('#fCount').textContent = selectedFiles.length;
 
-        this._ready = false;
-        if (this.onStatus) this.onStatus('connecting');
+        let total = 0;
+        list.innerHTML = '';
+
+        selectedFiles.forEach((f, i) => {
+            total += f.size;
+            const el = document.createElement('div');
+            el.className = 'f-item';
+            el.style.animationDelay = (i * 0.04) + 's';
+
+            let thumb = '<div class="f-thumb">🎬</div>';
+            try {
+                const url = URL.createObjectURL(f);
+                thumb = `<div class="f-thumb"><video src="${url}" muted preload="metadata"></video></div>`;
+            } catch(e) {}
+
+            el.innerHTML = `
+                ${thumb}
+                <div class="f-info">
+                    <div class="f-name" title="${f.name}">${f.name}</div>
+                    <div class="f-size">${fmtSize(f.size)}</div>
+                </div>
+                <button class="f-del" data-i="${i}">✕</button>
+            `;
+            list.appendChild(el);
+        });
+
+        $('#fTotal').textContent = fmtSize(total);
+
+        list.querySelectorAll('.f-del').forEach(b => {
+            b.addEventListener('click', e => {
+                e.stopPropagation();
+                selectedFiles.splice(+b.dataset.i, 1);
+                renderFiles();
+            });
+        });
+    }
+
+    $('#btnClearFiles').addEventListener('click', () => {
+        selectedFiles = [];
+        renderFiles();
+    });
+
+    // ===== SEND =====
+    $('#btnSend').addEventListener('click', async () => {
+        const target = $('#targetSelect').value;
+        if (!target) { toast('Select a device first', 'wrn'); return; }
+        if (!selectedFiles.length) { toast('No files selected', 'wrn'); return; }
+
+        toast(`Sending ${selectedFiles.length} video(s)...`, 'inf');
+        initSendProg();
 
         try {
-            // Use default PeerJS cloud server with NO custom config issues
-            this.peer = new Peer(id, {
-                debug: 0,
-                config: {
-                    iceServers: [
-                        { urls: 'stun:stun.l.google.com:19302' },
-                        { urls: 'stun:stun1.l.google.com:19302' },
-                    ]
+            await gp.sendFiles(target, selectedFiles);
+            toast('All sent! ✅', 'ok');
+        } catch(err) {
+            toast('Failed: ' + (err.message || err), 'err');
+        }
+    });
+
+    function initSendProg() {
+        const card = $('#progressCard');
+        const list = $('#progressList');
+        card.style.display = 'block';
+        list.innerHTML = '';
+
+        selectedFiles.forEach((f, i) => {
+            const el = document.createElement('div');
+            el.className = 'p-item';
+            el.id = `sp-${i}`;
+            el.innerHTML = `
+                <div class="p-head">
+                    <span class="p-name">${f.name}</span>
+                    <span class="p-pct">0%</span>
+                </div>
+                <div class="pbar-wrap glass-inner"><div class="pbar"></div></div>
+            `;
+            list.appendChild(el);
+        });
+
+        $('#overallBar').style.width = '0%';
+        $('#overallText').textContent = '0%';
+    }
+
+    function updateSendProg(p) {
+        const el = $(`#sp-${p.idx}`);
+        if (el) {
+            el.querySelector('.pbar').style.width = p.pct + '%';
+            el.querySelector('.p-pct').textContent = p.pct + '%';
+            if (p.pct >= 100) el.classList.add('done');
+        }
+        updateOverall();
+    }
+
+    function updateOverall() {
+        const items = $$('#progressList .p-item');
+        if (!items.length) return;
+        let sum = 0;
+        items.forEach(el => { sum += parseInt(el.querySelector('.p-pct').textContent) || 0; });
+        const avg = Math.round(sum / items.length);
+        $('#overallBar').style.width = avg + '%';
+        $('#overallText').textContent = avg + '%';
+    }
+
+    // ===== RECEIVE =====
+    function addRecvItem(m) {
+        const list = $('#inboxList');
+        const empty = list.querySelector('.empty');
+        if (empty) empty.remove();
+
+        if ($(`#ri-${m.fid}`)) return;
+
+        const el = document.createElement('div');
+        el.className = 'i-item';
+        el.id = `ri-${m.fid}`;
+        el.innerHTML = `
+            <div class="i-thumb">🎬</div>
+            <div class="i-info">
+                <div class="i-name">${m.name}</div>
+                <div class="i-meta">${fmtSize(m.size)} • Receiving...</div>
+                <div class="i-recv-bar">
+                    <div class="pbar-wrap glass-inner"><div class="pbar" style="width:0%"></div></div>
+                </div>
+            </div>
+        `;
+        list.prepend(el);
+    }
+
+    function updateRecvProg(p) {
+        const el = $(`#ri-${p.fid}`);
+        if (el) {
+            const bar = el.querySelector('.pbar');
+            if (bar) bar.style.width = p.pct + '%';
+            const meta = el.querySelector('.i-meta');
+            if (meta) meta.textContent = `${fmtSize(p.done * 64 * 1024)} / ${p.pct}%`;
+        }
+    }
+
+    function finalizeRecv(data) {
+        const el = $(`#ri-${data.fid}`);
+        if (!el) return;
+
+        const url = URL.createObjectURL(data.blob);
+
+        el.querySelector('.i-thumb').innerHTML = `<video src="${url}" muted preload="metadata"></video>`;
+        el.querySelector('.i-meta').textContent = `${fmtSize(data.size)} • From: ${data.from}`;
+
+        const bar = el.querySelector('.i-recv-bar');
+        if (bar) bar.remove();
+
+        const btn = document.createElement('button');
+        btn.className = 'i-dl';
+        btn.textContent = '💾 Save';
+        btn.addEventListener('click', () => {
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = data.name;
+            document.body.appendChild(a);
+            a.click();
+            a.remove();
+            toast('Downloading...', 'ok');
+        });
+        el.appendChild(btn);
+    }
+
+    // ===== TARGETS =====
+    function refreshTargets() {
+        const sel = $('#targetSelect');
+        const peers = gp.peers();
+        sel.innerHTML = '';
+
+        if (!peers.length) {
+            sel.innerHTML = '<option value="">No device connected</option>';
+        } else {
+            peers.forEach(id => {
+                const opt = document.createElement('option');
+                opt.value = id;
+                opt.textContent = id;
+                sel.appendChild(opt);
+            });
+        }
+    }
+
+    // ===== SAVED DEVICES =====
+    function refreshDevices() {
+        const list = $('#deviceList');
+        const devs = gp.saved;
+
+        if (!devs.length) {
+            list.innerHTML = `
+                <div class="empty">
+                    <div class="empty-icon">📱</div>
+                    <p>No saved devices</p>
+                    <span>Pair a device to save it here</span>
+                </div>
+            `;
+            return;
+        }
+
+        const icons = ['📱','💻','🖥️','🎮','📟'];
+        list.innerHTML = '';
+
+        devs.forEach((d, i) => {
+            const online = gp.isConn(d.id);
+            const el = document.createElement('div');
+            el.className = 'd-item';
+            el.style.animationDelay = (i * 0.05) + 's';
+            el.innerHTML = `
+                <div class="d-avatar">${icons[i % icons.length]}</div>
+                <div class="d-info">
+                    <div class="d-name">${d.name}${online ? ' 🟢' : ''}</div>
+                    <div class="d-id">${d.id}</div>
+                </div>
+                <div class="d-actions">
+                    <button class="d-conn" data-id="${d.id}">${online ? 'Online' : 'Connect'}</button>
+                    <button class="d-del" data-id="${d.id}">🗑</button>
+                </div>
+            `;
+            list.appendChild(el);
+        });
+
+        list.querySelectorAll('.d-conn').forEach(b => {
+            b.addEventListener('click', () => {
+                if (!gp.isConn(b.dataset.id)) {
+                    gp.connect(b.dataset.id);
+                    toast('Connecting...', 'inf');
                 }
             });
-        } catch(e) {
-            console.error('Peer create fail:', e);
-            setTimeout(() => this._connect(this._genId()), 2000);
-            return;
-        }
-
-        // Timeout: if not open in 10s, retry with new ID
-        const timer = setTimeout(() => {
-            if (!this._ready) {
-                console.warn('Timeout, retrying...');
-                const newId = this._genId();
-                localStorage.setItem('gt_id', newId);
-                this._connect(newId);
-            }
-        }, 10000);
-
-        this.peer.on('open', (openId) => {
-            clearTimeout(timer);
-            this._ready = true;
-            this._attempt = 0;
-            this.myId = openId;
-            localStorage.setItem('gt_id', openId);
-            if (this.onStatus) this.onStatus('online');
-            if (this.onReady) this.onReady(openId);
-            console.log('Peer ready:', openId);
         });
 
-        this.peer.on('connection', (conn) => this._incoming(conn));
-
-        this.peer.on('error', (err) => {
-            clearTimeout(timer);
-            console.error('Peer error:', err.type, err);
-
-            if (err.type === 'unavailable-id') {
-                const newId = this._genId();
-                localStorage.setItem('gt_id', newId);
-                setTimeout(() => this._connect(newId), 500);
-            } else if (err.type === 'peer-unavailable') {
-                if (this.onError) this.onError({ message: 'Device not found or offline' });
-            } else if (err.type === 'network' || err.type === 'server-error' || err.type === 'socket-error' || err.type === 'socket-closed') {
-                if (this.onStatus) this.onStatus('reconnecting');
-                setTimeout(() => {
-                    this._connect(localStorage.getItem('gt_id') || this._genId());
-                }, 2000 * this._attempt);
-            } else {
-                if (this.onError) this.onError({ message: err.type + ': ' + (err.message || '') });
-            }
-        });
-
-        this.peer.on('disconnected', () => {
-            if (this._ready) {
-                if (this.onStatus) this.onStatus('reconnecting');
-                setTimeout(() => {
-                    if (this.peer && !this.peer.destroyed) {
-                        try { this.peer.reconnect(); } catch(e) {
-                            this._connect(localStorage.getItem('gt_id') || this._genId());
-                        }
-                    }
-                }, 2000);
-            }
+        list.querySelectorAll('.d-del').forEach(b => {
+            b.addEventListener('click', () => {
+                gp.disconnect(b.dataset.id);
+                gp.removeDevice(b.dataset.id);
+                refreshDevices();
+                refreshTargets();
+                toast('Removed', 'inf');
+            });
         });
     }
 
-    // ===== CONNECTION HANDLING =====
-    connect(peerId) {
-        if (!this._ready) {
-            if (this.onError) this.onError({ message: 'Still connecting to network, please wait...' });
-            return;
-        }
-        if (peerId === this.myId) {
-            if (this.onError) this.onError({ message: "Can't connect to yourself" });
-            return;
-        }
-        if (this.conns.has(peerId)) {
-            if (this.onError) this.onError({ message: 'Already connected' });
-            return;
-        }
-
-        const trusted = this.saved.some(d => d.id === peerId);
-
-        const conn = this.peer.connect(peerId, {
-            reliable: true,
-            serialization: 'none'
-        });
-
-        this.pending.set(peerId, conn);
-
-        conn.on('open', () => {
-            conn.send(JSON.stringify({ type: 'pair-req', from: this.myId, trusted }));
-        });
-        conn.on('data', d => this._data(conn, peerId, d));
-        conn.on('close', () => {
-            this.conns.delete(peerId);
-            this.pending.delete(peerId);
-            if (this.onDisconnected) this.onDisconnected(peerId);
-        });
-        conn.on('error', e => {
-            console.error('conn error:', e);
-            if (this.onError) this.onError({ message: 'Connection to device failed' });
-        });
-    }
-
-    _incoming(conn) {
-        const pid = conn.peer;
-        conn.on('data', d => this._data(conn, pid, d));
-        conn.on('close', () => {
-            this.conns.delete(pid);
-            if (this.onDisconnected) this.onDisconnected(pid);
-        });
-    }
-
-    _data(conn, pid, data) {
-        if (typeof data === 'string') {
-            try { this._msg(conn, pid, JSON.parse(data)); } catch(e) {}
-        } else if (data instanceof ArrayBuffer) {
-            this._chunk(pid, data);
+    // Init empty inbox
+    function initInbox() {
+        const list = $('#inboxList');
+        if (!list.children.length) {
+            list.innerHTML = `
+                <div class="empty">
+                    <div class="empty-icon">📥</div>
+                    <p>No videos received</p>
+                    <span>Videos appear here when received</span>
+                </div>
+            `;
         }
     }
 
-    _msg(conn, pid, m) {
-        switch(m.type) {
-            case 'pair-req': {
-                const trusted = this.saved.some(d => d.id === pid);
-                if (trusted || m.trusted) {
-                    this._accept(conn, pid);
-                } else {
-                    this.pending.set(pid, conn);
-                    if (this.onPairRequest) this.onPairRequest(pid);
-                }
-                break;
-            }
-            case 'pair-ok':
-                this.conns.set(pid, conn);
-                this.pending.delete(pid);
-                if (this.onPairAccepted) this.onPairAccepted(pid);
-                break;
-            case 'pair-no':
-                this.pending.delete(pid);
-                try { conn.close(); } catch(e) {}
-                if (this.onPairRejected) this.onPairRejected(pid);
-                break;
-            case 'file-start':
-                this.receiving.set(m.fid, {
-                    name: m.name, size: m.size, mime: m.mime,
-                    chunks: [], got: 0, total: m.total
-                });
-                if (this.onFileStart) this.onFileStart(m);
-                break;
-            case 'file-end': {
-                const f = this.receiving.get(m.fid);
-                if (f) {
-                    const blob = new Blob(f.chunks, { type: f.mime });
-                    if (this.onFileComplete) this.onFileComplete({
-                        fid: m.fid, name: f.name, size: f.size,
-                        mime: f.mime, blob, from: pid
-                    });
-                    this.receiving.delete(m.fid);
-                }
-                break;
-            }
-        }
-    }
+    refreshDevices();
+    refreshTargets();
+    initInbox();
 
-    _chunk(pid, buf) {
-        for (const [fid, f] of this.receiving) {
-            if (f.got < f.total) {
-                f.chunks.push(buf);
-                f.got++;
-                if (this.onProgress) {
-                    this.onProgress({
-                        fid, name: f.name,
-                        done: f.got, total: f.total,
-                        pct: Math.round(f.got / f.total * 100),
-                        sending: false
-                    });
-                }
-                break;
-            }
-        }
-    }
-
-    acceptPair(pid) {
-        const conn = this.pending.get(pid);
-        if (conn) this._accept(conn, pid);
-    }
-
-    _accept(conn, pid) {
-        this.conns.set(pid, conn);
-        this.pending.delete(pid);
-        conn.send(JSON.stringify({ type: 'pair-ok', from: this.myId }));
-        if (this.onConnected) this.onConnected(pid);
-    }
-
-    rejectPair(pid) {
-        const conn = this.pending.get(pid);
-        if (conn) {
-            conn.send(JSON.stringify({ type: 'pair-no' }));
-            setTimeout(() => { try { conn.close(); } catch(e) {} }, 300);
-        }
-        this.pending.delete(pid);
-    }
-
-    // ===== FILE TRANSFER =====
-    async sendFiles(pid, files) {
-        const conn = this.conns.get(pid);
-        if (!conn) throw new Error('Not connected to device');
-        for (let i = 0; i < files.length; i++) {
-            await this._send(conn, files[i], i);
-        }
-    }
-
-    _send(conn, file, idx) {
-        return new Promise((resolve, reject) => {
-            const fid = 'f' + Date.now() + '_' + idx;
-            const total = Math.ceil(file.size / this.CHUNK);
-
-            conn.send(JSON.stringify({
-                type: 'file-start', fid,
-                name: file.name, size: file.size,
-                mime: file.type, total
-            }));
-
-            let off = 0, sent = 0;
-
-            const next = () => {
-                if (off >= file.size) {
-                    // Small delay to ensure last chunk is processed
-                    setTimeout(() => {
-                        conn.send(JSON.stringify({ type: 'file-end', fid }));
-                        resolve();
-                    }, 200);
-                    return;
-                }
-
-                const blob = file.slice(off, off + this.CHUNK);
-                const r = new FileReader();
-                r.onload = e => {
-                    try { conn.send(e.target.result); } catch(err) { reject(err); return; }
-                    sent++;
-                    off += this.CHUNK;
-
-                    if (this.onProgress) {
-                        this.onProgress({
-                            fid, name: file.name, idx,
-                            done: sent, total,
-                            pct: Math.round(sent / total * 100),
-                            sending: true
-                        });
-                    }
-
-                    // Simple back-pressure
-                    const wait = () => {
-                        try {
-                            // Check DataChannel buffer
-                            const dc = conn.dataChannel || (conn.peerConnection && conn.peerConnection.sctp);
-                            const bufSize = conn.bufferSize || (dc && dc.bufferedAmount) || 0;
-                            if (bufSize > 2 * 1024 * 1024) {
-                                setTimeout(wait, 50);
-                                return;
-                            }
-                        } catch(e) {}
-                        setTimeout(next, 1);
-                    };
-                    wait();
-                };
-                r.onerror = () => reject(new Error('File read error'));
-                r.readAsArrayBuffer(blob);
-            };
-
-            setTimeout(next, 200);
-        });
-    }
-
-    // ===== DEVICE STORAGE =====
-    saveDevice(pid) {
-        if (!this.saved.some(d => d.id === pid)) {
-            this.saved.push({ id: pid, name: 'Device ' + (this.saved.length + 1), ts: Date.now() });
-            this._save();
-        }
-    }
-    removeDevice(pid) {
-        this.saved = this.saved.filter(d => d.id !== pid);
-        this._save();
-    }
-    _loadDevices() {
-        try { return JSON.parse(localStorage.getItem('gt_devs') || '[]'); } catch { return []; }
-    }
-    _save() { localStorage.setItem('gt_devs', JSON.stringify(this.saved)); }
-
-    peers() { return [...this.conns.keys()]; }
-    isConn(pid) { return this.conns.has(pid); }
-    disconnect(pid) {
-        const c = this.conns.get(pid);
-        if (c) try { c.close(); } catch(e) {}
-        this.conns.delete(pid);
-    }
-}
+})();
